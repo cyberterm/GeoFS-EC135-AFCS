@@ -1,6 +1,9 @@
-# GeoFS-eurocopter-stability-assist
+# GeoFS-EC135-AFCS
 
-This repository includes a couple of scripts aiming to enhance the flying experience of the Eurocopter in GeoFS.
+An **Automatic Flight Control System (AFCS)** suite for the Eurocopter EC135 in GeoFS, featuring:
+* **Stability Augmentation System (SAS)** — Real-time rate damping for smooth manual flight.
+* **Fly-By-Wire (FBW)** — Self-leveling angle mode for easy handling.
+* **Cruise Autopilot (AP)** — Barometric altitude and heading hold with manual collective speed control.
 
 ### eurocopter_fbw.js
 This is like flying with training wheels. The new system takes over control and tries to match the attitude of the helicopter with your stick position. It's very similar to the angle mode drones use.  
