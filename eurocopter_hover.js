@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         GeoFS EC-135 SAS
+// @name         GeoFS EC-135 Hover Assist (Auto-Hover)
 // @namespace    https://github.com/cyberterm
 // @version      2026-09-25
-// @description  Stability Augmentation System for GeoFS EC-135. Active by default, auto-yields to Autopilot, with optional CapsLock disable.
+// @description  Auto-Hover & Attitude Hold system for GeoFS EC-135. Self-leveling angle mode for hands-off hovering. Toggle with 'G'.
 // @author       cyberterm
 // @match        *://*.geo-fs.com/*
 // @include      *://*.geo-fs.com/*
@@ -18,24 +18,54 @@
     // ----------------------------------------
     const EC135_ID = '9';
 
-    const SAS_CONFIG = {
-        pitchDamping: 0.8,
-        rollDamping: 0.8,
-        yawDampThreshold: 0.4,
-        yawDampStrength: 1.0
+    const HOVER_CONFIG = {
+        // Pitch Angle Mode
+        pitchSensitivity: 20,     // Max target pitch angle in degrees (full stick)
+        Kp_pitch: 0.025,          // Auto-leveling spring strength
+        Kd_pitch: 0.45,           // Pitch rate damping
+
+        // Roll Angle Mode
+        rollSensitivity: 20,      // Max target roll angle in degrees (full stick)
+        Kp_roll: 0.025,           // Auto-leveling spring strength
+        Kd_roll: 0.45,            // Roll rate damping
+
+        // Yaw Heading Hold in Hover
+        yawDeadzone: 0.05,        // Pedals deadzone to capture & hold hover heading
+        yaw_Kp: 0.025,            // Heading hold proportional gain
+        yaw_Kd: 0.35,             // Yaw rate damping gain
+        maxYawCmd: 0.40,          // Max yaw command limit
+
+        // Master Toggle Key
+        toggleKey: 'g'            // Press 'G' to switch between Hover and Realistic Stack
     };
 
+    // Shared global state for stack coordination
+    window._ec135 = window._ec135 || {};
+    window._ec135.hoverActive = false;
+
     // State Tracking
+    let hoverActive = false;      // Inactive by default
     let isEC135 = false;
-    let sasActive = true;       // Active by default (authentic EC-135 behavior)
+    let targetHeading = null;
     let lastHeading = 0;
     let lastPitch = 0;
     let lastRoll = 0;
+    let wasApActive = false;
     let animationFrameId;
 
     // ----------------------------------------
     // 2. HELPERS
     // ----------------------------------------
+    function clamp(val, min, max) {
+        return Math.max(min, Math.min(max, val));
+    }
+
+    function wrapAngle(delta) {
+        while (delta > 180) delta -= 360;
+        while (delta < -180) delta += 360;
+        return delta;
+    }
+
     function checkIsEC135() {
         try {
             return String(geofs.aircraft.instance.id) === String(EC135_ID);
@@ -50,7 +80,7 @@
     }
 
     function showNotification(msg) {
-        console.log("[EC-135 SAS] " + msg);
+        console.log("[EC-135 HOVER] " + msg);
         try {
             let id = "ec135-hud-notification";
             let banner = document.getElementById(id);
@@ -87,48 +117,44 @@
         }
     }
 
-    function isHoverActive() {
-        return !!(window._ec135 && window._ec135.hoverActive);
-    }
-
-    let wasApActive = false;
-    let wasHoverActive = false;
-
     // ----------------------------------------
-    // 3. CORE MATH & DAMPING
+    // 3. CORE HOVER CONTROL LOOP
     // ----------------------------------------
-    function updateSAS() {
-        if (!sasActive || !isEC135) return;
+    function updateHover() {
+        if (!hoverActive || !isEC135) return;
 
+        // Auto-yield to Autopilot if AP takes over
         let apActive = isAutopilotActive();
-        let hoverActive = isHoverActive();
-
-        // Auto-yield to Autopilot or Hover Assist: let outer loop drive
-        if (apActive || hoverActive) {
-            if (apActive) wasApActive = true;
-            if (hoverActive) wasHoverActive = true;
+        if (apActive) {
+            wasApActive = true;
             lastHeading = 0;
             lastPitch = 0;
             lastRoll = 0;
+            targetHeading = null;
             return;
         }
 
-        // When AP or Hover disengages, re-hook parts back to "fbwPitch"/"fbwRoll"/"fbwYaw"
-        if (wasApActive || wasHoverActive) {
+        // When AP disengages while Hover is still armed, re-hook controls
+        if (wasApActive) {
             wasApActive = false;
-            wasHoverActive = false;
-            hookSAS();
+            hookHoverControls();
+            lastHeading = 0;
+            lastPitch = 0;
+            lastRoll = 0;
+            targetHeading = null;
         }
 
         try {
-            // Read Current States (|| 0 prevents NaN crashes)
-            let currentHeading = geofs.animation.values.heading360 || 0;
-            let currentPitch = geofs.animation.values.atilt || 0;
-            let currentRoll = geofs.animation.values.aroll || 0;
+            const vals = geofs.animation.values;
 
-            let pitchInput = geofs.animation.values.pitch || 0;
-            let rollInput = geofs.animation.values.roll || 0;
-            let yawInput = geofs.animation.values.yaw || 0;
+            let currentHeading = vals.heading360 || 0;
+            let currentPitch = vals.atilt || 0;    // Positive = nose down, negative = nose up
+            let currentRoll = vals.aroll || 0;      // Positive = right bank, negative = left bank
+
+            // Raw pilot inputs (if A.TRIM is loaded, vals.pitch returns raw pilot stick during hover)
+            let pitchInput = vals.pitch || 0;
+            let rollInput = vals.roll || 0;
+            let yawInput = vals.yaw || 0;
 
             if (lastHeading === 0 && lastPitch === 0 && lastRoll === 0) {
                 lastHeading = currentHeading;
@@ -136,23 +162,46 @@
                 lastRoll = currentRoll;
             }
 
-            // YAW DAMPER
-            let rotationDelta = lastHeading - currentHeading;
-            if (rotationDelta > 180) rotationDelta -= 360;
-            if (rotationDelta < -180) rotationDelta += 360;
-
-            if (Math.abs(rotationDelta) <= SAS_CONFIG.yawDampThreshold) {
-                geofs.animation.values.fbwYaw = yawInput + (rotationDelta * SAS_CONFIG.yawDampStrength);
-            } else {
-                geofs.animation.values.fbwYaw = yawInput;
-            }
-
-            // PITCH & ROLL RATE DAMPING
             let pitchRate = currentPitch - lastPitch;
             let rollRate = currentRoll - lastRoll;
+            let yawRate = wrapAngle(currentHeading - lastHeading);
 
-            geofs.animation.values.fbwPitch = pitchInput + (pitchRate * SAS_CONFIG.pitchDamping);
-            geofs.animation.values.fbwRoll = rollInput + (rollRate * SAS_CONFIG.rollDamping);
+            // ==========================================
+            // 1. PITCH: AUTO-LEVELING ANGLE MODE
+            // ==========================================
+            // When stick is centered (pitchInput == 0), pitchTarget is 0° (level hover)
+            // When stick is pushed forward (pitchInput < 0), pitchTarget is positive (nose down)
+            let pitchTarget = HOVER_CONFIG.pitchSensitivity * -pitchInput;
+            let pitchError = pitchTarget - currentPitch;
+            let pitchCmd = -((pitchError * HOVER_CONFIG.Kp_pitch) - (pitchRate * HOVER_CONFIG.Kd_pitch));
+            vals.fbwPitch = clamp(pitchCmd, -1.0, 1.0);
+
+            // ==========================================
+            // 2. ROLL: AUTO-LEVELING ANGLE MODE
+            // ==========================================
+            // When stick is centered (rollInput == 0), rollTarget is 0° (wings level)
+            // When stick is deflected right (rollInput > 0), rollTarget is negative (right bank)
+            let rollTarget = HOVER_CONFIG.rollSensitivity * -rollInput;
+            let rollError = rollTarget - currentRoll;
+            let rollCmd = -((rollError * HOVER_CONFIG.Kp_roll) - (rollRate * HOVER_CONFIG.Kd_roll));
+            vals.fbwRoll = clamp(rollCmd, -0.6, 0.6);
+
+            // ==========================================
+            // 3. YAW: PEDAL HEADING HOLD IN HOVER
+            // ==========================================
+            let isPedalDeflected = Math.abs(yawInput) > HOVER_CONFIG.yawDeadzone;
+
+            if (isPedalDeflected) {
+                // Pilot commanding turn: follow pedal input directly with rate damping
+                targetHeading = currentHeading;
+                vals.fbwYaw = clamp(yawInput - (yawRate * (HOVER_CONFIG.yaw_Kd * 0.1)), -1.0, 1.0);
+            } else {
+                // Pedals centered: lock & hold current heading
+                if (targetHeading === null) targetHeading = currentHeading;
+                let hdgError = wrapAngle(targetHeading - currentHeading);
+                let yawCmd = (hdgError * HOVER_CONFIG.yaw_Kp) - (yawRate * (HOVER_CONFIG.yaw_Kd * 0.1));
+                vals.fbwYaw = clamp(yawCmd, -HOVER_CONFIG.maxYawCmd, HOVER_CONFIG.maxYawCmd);
+            }
 
             // Save states
             lastHeading = currentHeading;
@@ -166,7 +215,7 @@
 
     function flightLoop() {
         if (window.geofs && geofs.animation && geofs.animation.values) {
-            updateSAS();
+            updateHover();
         }
         animationFrameId = requestAnimationFrame(flightLoop);
     }
@@ -174,7 +223,7 @@
     // ----------------------------------------
     // 4. AIRCRAFT PART HOOKING
     // ----------------------------------------
-    function hookSAS() {
+    function hookHoverControls() {
         if (!geofs.aircraft || !geofs.aircraft.instance || !geofs.aircraft.instance.parts) return;
         const parts = geofs.aircraft.instance.parts;
 
@@ -194,7 +243,7 @@
         if (parts.cyclicRotorPositive && parts.cyclicRotorPositive.animations[1]) parts.cyclicRotorPositive.animations[1].value = "fbwRoll";
     }
 
-    function unhookSAS() {
+    function unhookHoverControls() {
         if (!geofs.aircraft || !geofs.aircraft.instance || !geofs.aircraft.instance.parts) return;
         const parts = geofs.aircraft.instance.parts;
 
@@ -215,9 +264,58 @@
     }
 
     // ----------------------------------------
-    // 5. INITIALIZATION & MONITORING
+    // 5. MASTER TOGGLE & STACK COORDINATION
     // ----------------------------------------
-    console.log("SAS Script waiting for GeoFS aircraft to load...");
+    function setHoverState(enable) {
+        hoverActive = enable;
+        window._ec135.hoverActive = enable;
+
+        if (hoverActive) {
+            // Disengage Autopilot if active so Hover takes priority
+            if (isAutopilotActive()) {
+                let apBtn = document.querySelector(".geofs-autopilot-toggle.geofs-active");
+                if (apBtn) apBtn.click();
+            }
+
+            lastHeading = 0;
+            lastPitch = 0;
+            lastRoll = 0;
+            targetHeading = null;
+            hookHoverControls();
+            showNotification("EC-135 HOVER: ENGAGED (Auto-Level Active)");
+            console.log("[EC-135 HOVER] Engaged. Self-leveling hover active.");
+        } else {
+            unhookHoverControls();
+
+            // Clear outputs
+            if (geofs.animation && geofs.animation.values) {
+                geofs.animation.values.fbwPitch = 0;
+                geofs.animation.values.fbwRoll = 0;
+                geofs.animation.values.fbwYaw = 0;
+            }
+
+            showNotification("EC-135 HOVER: DISENGAGED (Realistic Stack Active)");
+            console.log("[EC-135 HOVER] Disengaged. Returned to realistic flight stack.");
+        }
+    }
+
+    function hookToggleKey() {
+        document.addEventListener("keydown", function(event) {
+            if (!isEC135) return;
+            if (document.activeElement.tagName === "INPUT" || document.activeElement.tagName === "TEXTAREA") return;
+
+            if (event.key.toLowerCase() === HOVER_CONFIG.toggleKey.toLowerCase() && !event.shiftKey && !event.ctrlKey && !event.altKey) {
+                event.preventDefault();
+                event.stopImmediatePropagation();
+                setHoverState(!hoverActive);
+            }
+        }, true);
+    }
+
+    // ----------------------------------------
+    // 6. INITIALIZATION & MONITORING
+    // ----------------------------------------
+    console.log("EC-135 Hover Script waiting for GeoFS...");
 
     let waitForReady = setInterval(function() {
         if (typeof geofs !== 'undefined' && geofs.aircraft && geofs.aircraft.instance && geofs.aircraft.instance.parts) {
@@ -226,38 +324,14 @@
             let lastAircraftId = geofs.aircraft.instance.id;
             isEC135 = checkIsEC135();
 
-            if (isEC135) {
-                sasActive = true;
-                hookSAS();
-                showNotification("EC-135 SAS: ENGAGED (Armed by default)");
-                console.log("EC-135 detected. SAS active by default. Press CapsLock to toggle.");
-            } else {
-                sasActive = false;
-                console.log("Current aircraft is not an EC-135. SAS will activate when switching to the EC-135.");
-            }
-
+            hookToggleKey();
             animationFrameId = requestAnimationFrame(flightLoop);
 
-            // Optional Keyboard Toggle
-            document.addEventListener("keydown", function(event) {
-                if (!isEC135) return;
-                if (document.activeElement.tagName === "INPUT" || document.activeElement.tagName === "TEXTAREA") return;
-
-                if (event.key === "CapsLock") {
-                    sasActive = !sasActive;
-
-                    if (sasActive) {
-                        lastHeading = 0;
-                        lastPitch = 0;
-                        lastRoll = 0;
-                        hookSAS();
-                        showNotification("EC-135 SAS: ENGAGED");
-                    } else {
-                        unhookSAS();
-                        showNotification("EC-135 SAS: DISENGAGED (Raw Flight)");
-                    }
-                }
-            });
+            if (isEC135) {
+                console.log("EC-135 detected. Hover Assist ready (Inactive by default). Press 'G' to engage Auto-Hover.");
+            } else {
+                console.log("Current aircraft is not an EC-135. Hover Assist ready for EC-135.");
+            }
 
             // Aircraft change monitor
             setInterval(function() {
@@ -267,19 +341,12 @@
                     let currentId = geofs.aircraft.instance.id;
                     if (currentId !== lastAircraftId) {
                         lastAircraftId = currentId;
-                        isEC135 = checkIsEC135();
 
-                        if (isEC135) {
-                            sasActive = true;
-                            lastHeading = 0;
-                            lastPitch = 0;
-                            lastRoll = 0;
-                            hookSAS();
-                            showNotification("EC-135 SAS: ENGAGED");
-                        } else {
-                            sasActive = false;
-                            unhookSAS();
+                        if (hoverActive) {
+                            setHoverState(false);
                         }
+
+                        isEC135 = checkIsEC135();
                     }
                 } catch (e) {
                     // Silently catch errors
