@@ -1,106 +1,114 @@
-# GeoFS Eurocopter EC-135 AFCS & Flight Assists
+# GeoFS Eurocopter EC-135 Automatic Flight Control System (AFCS)
 
-A modular flight control suite for the **Eurocopter EC-135** (`ID 9`) in [GeoFS](https://www.geo-fs.com/). 
+An authentic, complete **Automatic Flight Control System (AFCS)** and flight assistance suite for the **Eurocopter EC-135** (`ID 9`) in [GeoFS](https://www.geo-fs.com/).
 
-Designed to fix the twitchy stock handling, eliminate constant forward stick pressure in cruise, and provide realistic stability augmentation, auto-hover, and autopilot.
+Designed to eliminate twitchy stock handling, remove the exhausting need for constant forward stick pressure in cruise flight, and bring authentic Airbus Helicopters / Eurocopter avionics to GeoFS — from high-rate stability augmentation to hands-off cruising and precision auto-hovering.
 
 ---
 
 ## Quickstart
 
-Install any or all scripts via Tampermonkey. They coordinate automatically through a shared flight bus without conflicts.
+### 1. Installation
 
-### Control Cheat-Sheet
+* **Option 1: Greasy Fork (Recommended)**
+  * Install via **[Greasy Fork](https://greasyfork.org/en/scripts/geofs-eurocopter-ec-135-afcs-suite)** (requires [Tampermonkey](https://www.tampermonkey.net/) or [Violentmonkey](https://violentmonkey.github.io/)).
+  * Greasy Fork handles 1-click installation and automatic background update checks.
 
-| Script | What It Does | Default | Toggle |
-| :--- | :--- | :--- | :--- |
-| **`eurocopter_sas.js`** | **Stability Augmentation System** — Gyro rate damping across pitch, roll, and yaw. Eliminates twitchiness. | **Active on Spawn** | <kbd>Caps Lock</kbd> |
-| **`eurocopter_atrim.js`** | **Pitch Auto-Trim (A.TRIM)** — Holds forward cruise pitch hands-off against rotor flapback. No stick holding needed. | **Active on Spawn** | <kbd>Z</kbd> |
-| **`eurocopter_hover.js`** | **Hover Assist** — Self-leveling angle mode. Auto-levels to 0° wings-level hover and holds heading on stick release. | Inactive | <kbd>G</kbd> |
-| **`eurocopter_ap.js`** | **Cruise Autopilot** — Locks barometric altitude and heading. Collective controls airspeed. | Inactive | <kbd>A</kbd> |
+* **Option 2: Direct GitHub 1-Click Install**
+  * If you already have Tampermonkey installed:  
+    👉 **[Install from GitHub Raw](https://raw.githubusercontent.com/cyberterm/GeoFS-EC135-AFCS/main/eurocopter_afcs.user.js)**
 
-### Recommended Setups
+* **Option 3: Browser Console (No Extension Needed)**
+  * For restricted devices (Chromebooks/managed browsers) where extensions are blocked:
+    1. Spawn in the EC-135 in GeoFS.
+    2. Open Developer Tools (<kbd>F12</kbd> or right-click $\to$ **Inspect** $\to$ **Console**).
+    3. Paste the contents of [`eurocopter_afcs.user.js`](eurocopter_afcs.user.js) and press <kbd>Enter</kbd>.
 
-* **Realistic Cockpit Stack (Recommended):** Install `eurocopter_sas.js` + `eurocopter_atrim.js`. Both arm on spawn. Push forward to accelerate, release the stick, and cruise hands-off while retaining 100% natural cyclic feel.
-* **Easy Hovering / Helipad Landings:** Add `eurocopter_hover.js`. Cruise in the realistic stack, tap <kbd>G</kbd> on approach to auto-level into a hover, and tap <kbd>G</kbd> again to depart.
-* **Long-Distance Cruise:** Add `eurocopter_ap.js`. Tap <kbd>A</kbd> to lock altitude and heading; use collective to set your cruise speed.
-
----
-
-## Installation
-
-### Option 1: Tampermonkey (Recommended)
-1. Install the [Tampermonkey](https://www.tampermonkey.net/) extension in your browser.
-2. Click the extension icon and select **Create a new script**.
-3. Replace the default template with the code from any script (`eurocopter_atrim.js`, `eurocopter_sas.js`, `eurocopter_hover.js`, or `eurocopter_ap.js`).
-4. Save (<kbd>Ctrl</kbd> + <kbd>S</kbd>) and load [GeoFS](https://www.geo-fs.com/geofs.php). The scripts activate automatically when you spawn in the EC-135.
-
-### Option 2: Browser Developer Console (F12)
-1. Spawn in the EC-135 in GeoFS.
-2. Press <kbd>F12</kbd> (or right-click → **Inspect**), open the **Console** tab, paste the script code, and press <kbd>Enter</kbd>.
+*(Individual standalone modular scripts are also preserved in the `standalone-scripts` branch for specialized use cases).*
 
 ---
 
-## Flight Operations & Keybinds
+### 2. Controls & Keybindings
 
-```
-                      [ Cruise Autopilot ('A') ]
-                                  │
-                                  ▼
-                        [ Hover Assist ('G') ]
-                                  │
-                                  ▼
-               [ Realistic Stack: SAS (Caps) + A.TRIM ('Z') ]
-```
+You do not need to press any keys to enjoy realistic, stable flight. The core stability and pitch-trim systems **arm automatically on spawn** and work seamlessly in the background.
 
-1. **Takeoff & Cruise (Default):**
-   * Spawning activates **SAS** and **A.TRIM** automatically.
-   * Pull collective to climb. Push the cyclic forward to reach your desired cruising speed (e.g. -8° nose dip for 120 kts).
-   * Release the stick. A.TRIM holds that nose-down attitude hands-off. Pulling or pushing the stick overrides it smoothly without violent pitch-up snaps.
-2. **Transitioning to Hover (<kbd>G</kbd>):**
-   * Approaching a helipad, press <kbd>G</kbd>. A.TRIM and SAS yield, and **Hover Assist** takes over.
-   * Release the controls: the helicopter automatically levels its wings to 0° and locks onto its current heading.
-   * Press <kbd>G</kbd> again to depart. The realistic stack seamlessly resumes.
-3. **Engaging Autopilot (<kbd>A</kbd>):**
-   * Press <kbd>A</kbd> (or click the cockpit AP button) at cruising altitude.
-   * The AP captures your current barometric altitude (rounded to the nearest 100 ft) and heading.
-   * Lower assist modes automatically yield. Press <kbd>A</kbd> again to disconnect and resume manual trimmed flight with zero bump.
+#### Primary Flight Modes
+| Key | Mode | Status | When to Use |
+| :---: | :--- | :---: | :--- |
+| *(None)* | **Realistic Flight (SAS + A.TRIM)** | **Default** | **Normal flying:** Take off, push forward to cruise speed, and release the stick. The helicopter flies stable and trimmed hands-off. |
+| <kbd>A</kbd> | **Cruise Autopilot** | Optional | **Long cross-country flights:** Locks barometric altitude and heading. Adjust your airspeed using the collective. |
+| <kbd>G</kbd> | **Hover Assist** | Optional | **Helipad landings & hovering:** Hands-off self-leveling to 0° wings-level hover with automatic heading lock. |
+
+#### Advanced System Diagnostics (Optional)
+These keys are only needed if you want to disarm individual systems to test raw helicopter physics:
+| Key | System Toggle | Description |
+| :---: | :--- | :--- |
+| <kbd>Z</kbd> | **A.TRIM Disarm** | Toggles pitch auto-trim off for direct mechanical pitch response without attitude retention. |
+| <kbd>Caps Lock</kbd> | **SAS Disarm** | Toggles stability augmentation off to fly with raw, unaugmented aerodynamic twitchiness. |
 
 ---
 
-## System Breakdown
+## How to Fly with the AFCS
 
-### `eurocopter_atrim.js` (Pitch Auto-Trim)
-Replicates the parallel longitudinal trim motor of the Eurocopter EC-135:
-* **Hands-Off Cruise Retention:** Holds the commanded nose-down pitch attitude against natural rotor flapback.
-* **Smooth Pilot Override:** Deflecting the cyclic moves the stick relative to the trim datum (`Cyclic = trimDatum + pilotInput`), eliminating the violent snapback of basic attitude holds.
-* **Parallel Trim Migration:** Holding stick deflection slowly migrates the trim datum (~1.5°/sec), washing out stick force.
-* **Clean Pitch Focus:** Modulates pitch only. Roll and yaw remain 100% direct mechanical controls with zero cross-coupling.
+### 1. Normal Flight (Takeoff & Fast Cruise)
+* **On Spawn:** Both **SAS** and **A.TRIM** arm automatically (replicating a real EC-135 cockpit startup).
+* **Accelerating:** Pull collective to climb, then push the cyclic forward to pitch down and accelerate (e.g. $-8^\circ$ nose dip for 120 kts).
+* **Hands-Off Cruise:** Release the cyclic. **A.TRIM** captures and holds that nose-down attitude hands-off. You can fly long distances at high speed without touching the pitch axis or holding continuous forward pressure.
+* **Maneuvering:** Pushing or pulling the stick moves the cyclic smoothly. When you find a new desired pitch angle and release the stick, A.TRIM captures the new attitude automatically.
 
-### `eurocopter_sas.js` (Stability Augmentation System)
-Replicates the high-speed series actuators (SEMAs) of the real EC-135:
-* **Gyro Rate Damping:** Dampens pitch rate, roll rate, and yaw rate to eliminate aerodynamic twitchiness and tail fishtailing.
-* **Auto-Yielding:** Steps aside when Autopilot (<kbd>A</kbd>) or Hover Assist (<kbd>G</kbd>) are active, and re-hooks automatically upon disengagement.
-* **Toggle:** Press <kbd>Caps Lock</kbd> to toggle raw, unaugmented manual flight.
+### 2. Precision Hovering & Landings (<kbd>G</kbd>)
+* **Entering Hover:** As you approach a helipad, press <kbd>G</kbd>. A.TRIM yields and **Hover Assist** takes over.
+* **Self-Leveling Cyclic:** Stick inputs command exact pitch and roll angles rather than angular rates. Centering the stick automatically brings the helicopter to a $0^\circ$ flat, wings-level hover.
+* **Spot Turns & Heading Lock:** Deflecting the pedals rotates the tail cleanly on the spot. Releasing the pedals actively halts rotation and locks onto your current heading.
+* **Departing:** Press <kbd>G</kbd> to disengage Hover Assist. The realistic stack seamlessly takes back over.
 
-### `eurocopter_hover.js` (Hover Assist)
-Self-centering angle mode designed for easy hovering and precision landings:
-* **Self-Leveling Cyclic:** Stick deflection commands pitch and roll angles; centering the stick returns wings and pitch to 0° level.
-* **Pedal Heading Hold:** Centering the rudder pedals locks onto current heading hands-off. Deflecting pedals turns the tail with rate damping.
-* **Toggle:** Press <kbd>G</kbd> to switch between the realistic flight stack and hover mode.
-
-### `eurocopter_ap.js` (Cruise Autopilot)
-A 3-loop cruise autopilot for long-distance flights:
-* **Altitude Hold:** Outer altitude loop commands vertical speed, middle loop commands pitch attitude, and inner loop drives cyclic pitch.
-* **Heading Hold:** PID loop drives the Fenestron tail rotor to hold heading.
-* **Speed Control:** Collective remains 100% manual; raising collective commands forward cyclic to maintain altitude, increasing airspeed.
-* **Toggle:** Press <kbd>A</kbd> or click the UI autopilot toggle.
+### 3. Long-Distance Cruise Autopilot (<kbd>A</kbd>)
+* **Engaging:** At cruising altitude, press <kbd>A</kbd> (or click the cockpit autopilot button).
+* **Altitude & Heading Hold:** The autopilot captures your current barometric altitude (rounded to the nearest 100 ft) and heading.
+* **Speed Management:** Raising or lowering collective changes your airspeed. The autopilot automatically trims cyclic pitch to hold exact altitude as power changes.
+* **Disengaging:** Press <kbd>A</kbd> again. The system performs a bumpless handover back to manual flight.
 
 ---
 
-## Technical Details (For Modders)
+## In-Depth System Details
 
-* **Inter-Script Coordination:** Scripts share a global bus (`window._ec135.hoverActive`). When Hover Assist engages, A.TRIM resets forward cruise trim to 0 and yields, while SAS steps aside to prevent dual damping loops.
-* **Handshake on AP Disengagement:** When `eurocopter_ap.js` disconnects, it unhooks 3D parts back to default animation values. `eurocopter_sas.js` listens for this transition and re-hooks the cyclic and tail rotor parts back to `fbwPitch`/`fbwRoll`/`fbwYaw`, while `eurocopter_atrim.js` inherits the AP's last cruise pitch trim position for a bump-free handover.
-* **Control Interception:** `eurocopter_atrim.js` uses `Object.defineProperty` on `geofs.animation.values.pitch`. This cleanly intercepts control inputs before SAS and GeoFS physics without modifying stock game files.
-* **Console Logging:** Clean browser console logs for state changes and engagements without immersion-breaking HUD overlays.
+For pilots and developers interested in the avionics and mathematics behind the suite:
+
+### 1. Stability Augmentation System (SAS)
+Replicates the high-frequency series actuators (SEMAs) of the real Eurocopter EC-135:
+* **Gyro Rate Damping:** Dampens pitch, roll, and yaw angular rates ($\text{deg/sec}$) calculated frame-rate independently ($\Delta t$), ensuring identical flight feel across 30, 60, and 144+ FPS.
+* **Progressive Damping Blend on Yaw:** Hands-off pedals receive 100% gyro damping to cancel spin and weathercocking. When maneuvering ($|\text{pedal}| > 0.03$), damping fades smoothly to prevent control fighting or sluggish turns.
+* **Collective-to-Yaw Mixing (Torque Anticipator):** A filtered feedforward compensator applies tail rotor bias during collective pulls, neutralizing the violent torque kick before yaw displacement can develop.
+
+### 2. Pitch Auto-Trim (A.TRIM)
+Replicates the electric parallel trim actuator of the EC-135:
+* **Flapback Counter-Torque:** Natural rotor aerodynamics cause main rotor flapback, pitching the nose up as forward airspeed increases. A.TRIM builds and maintains the steady forward cyclic needed to counteract flapback hands-off.
+* **Parallel Trim Migration:** Holding stick deflection forward or aft slews the trim datum progressively, eliminating residual stick force.
+* **Bumpless Handover:** Releasing the stick smoothly transfers commanded cyclic into the trim register with zero cyclic drop or ballooning.
+
+### 3. Hover Assist
+A specialized low-speed control augmentation mode:
+* **Proportional-Derivative Attitude Hold:** Maps cyclic deflection directly to target bank and pitch angles ($\pm 20^\circ$).
+* **Two-Phase Heading Lock:** When pedals are released from a turn, the system applies dynamic gyro braking to bring rotation below $1.5^\circ/\text{sec}$, then captures and holds the settled heading with a critically damped PD loop.
+
+### 4. Cruise Autopilot (AP)
+A cascaded 3-loop flight director and autopilot:
+* **Outer Altitude Loop:** Converts altitude error to target vertical speed ($\pm 500\text{ ft/min}$).
+* **Middle V/S Loop:** Integrates vertical speed error to calculate the exact nose-down pitch angle required for the current collective setting.
+* **Inner Pitch Loop:** Tracks target attitude and drives the swashplate cyclic with rate damping.
+* **Heading Hold PID:** Proportional-Integral-Derivative tail rotor controller with anti-windup clamping.
+
+---
+
+## Compatibility & Architecture
+
+* **Input Hardware:** 100% compatible with Mouse Flight, Keyboard controls, and USB Flight Sticks / Gamepads (HTML5 Gamepad API).
+* **Frame-Rate Invariant:** All integral, derivative, and damping calculations are normalized against `performance.now()` $\Delta t$ delta time.
+* **Clean Logging:** All status notifications are delivered cleanly to the browser Developer Console (`[EC-135 AFCS]`), leaving your cockpit view free of immersion-breaking HUD banners.
+* **Fail-Safe Flight Loop:** The internal animation loop is isolated in a protected execution block, ensuring flight controls remain responsive under all conditions.
+
+---
+
+## License
+
+Created by **cyberterm**. Free and open-source for the GeoFS flight simulation community.
