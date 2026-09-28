@@ -103,4 +103,4 @@ A 3-loop cruise autopilot for long-distance flights:
 * **Inter-Script Coordination:** Scripts share a global bus (`window._ec135.hoverActive`). When Hover Assist engages, A.TRIM resets forward cruise trim to 0 and yields, while SAS steps aside to prevent dual damping loops.
 * **Handshake on AP Disengagement:** When `eurocopter_ap.js` disconnects, it unhooks 3D parts back to default animation values. `eurocopter_sas.js` listens for this transition and re-hooks the cyclic and tail rotor parts back to `fbwPitch`/`fbwRoll`/`fbwYaw`, while `eurocopter_atrim.js` inherits the AP's last cruise pitch trim position for a bump-free handover.
 * **Control Interception:** `eurocopter_atrim.js` uses `Object.defineProperty` on `geofs.animation.values.pitch`. This cleanly intercepts control inputs before SAS and GeoFS physics without modifying stock game files.
-* **HUD Notifications:** All toggles trigger a non-intrusive floating HUD banner that automatically fades after 2 seconds without blocking clicks or pausing the simulator.
+* **Console Logging:** Clean browser console logs for state changes and engagements without immersion-breaking HUD overlays.

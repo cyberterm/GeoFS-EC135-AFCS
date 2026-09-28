@@ -24,10 +24,10 @@
 
         // A.TRIM Longitudinal Pitch Loop (Parallel Trim Motor)
         // In real helicopters, electric parallel trim motors migrate trim at ~2 deg/sec
-        trimMigrationRate: 0.12,   // Slew rate per second of trim datum toward held stick position
-        pitch_Kp: 0.030,           // Proportional gain to hold target attitude hands-off
-        pitch_Ki: 0.018,           // Integral trim gain: builds steady forward cyclic against flapback
-        pitch_Kd: 0.18,            // Pitch rate damping
+        trimMigrationRate: 0.15,   // Migration rate per second of stick deflection
+        pitch_Kp: 0.035,           // Proportional gain to hold target attitude hands-off
+        pitch_Ki: 0.035,           // Integral trim gain: builds steady forward cyclic against flapback
+        pitch_Kd: 0.020,           // Pitch rate damping gain
         maxPitchTrim: 0.75,        // Maximum cyclic pitch trim authority
 
         // Master Toggle Key
@@ -54,6 +54,7 @@
     let lastTime = performance.now();
     let wasApActive = false;
     let wasHoverActive = false;
+    let wasPitchDeflected = false;
     let animationFrameId;
 
     // ----------------------------------------
@@ -82,40 +83,6 @@
 
     function showNotification(msg) {
         console.log("[EC-135 A.TRIM] " + msg);
-        try {
-            let id = "ec135-hud-notification";
-            let banner = document.getElementById(id);
-            if (!banner) {
-                banner = document.createElement("div");
-                banner.id = id;
-                banner.style.position = "fixed";
-                banner.style.top = "60px";
-                banner.style.left = "50%";
-                banner.style.transform = "translateX(-50%)";
-                banner.style.backgroundColor = "rgba(10, 15, 20, 0.85)";
-                banner.style.color = "#00ffcc";
-                banner.style.padding = "7px 18px";
-                banner.style.borderRadius = "20px";
-                banner.style.fontFamily = "monospace, sans-serif";
-                banner.style.fontSize = "13px";
-                banner.style.fontWeight = "bold";
-                banner.style.letterSpacing = "0.5px";
-                banner.style.boxShadow = "0 4px 14px rgba(0, 0, 0, 0.6)";
-                banner.style.border = "1px solid rgba(0, 255, 204, 0.35)";
-                banner.style.zIndex = "100000";
-                banner.style.pointerEvents = "none";
-                banner.style.transition = "opacity 0.3s ease";
-                document.body.appendChild(banner);
-            }
-            banner.textContent = msg;
-            banner.style.opacity = "1";
-            clearTimeout(banner._fadeTimer);
-            banner._fadeTimer = setTimeout(function() {
-                banner.style.opacity = "0";
-            }, 2000);
-        } catch (e) {
-            // Silently ignore
-        }
     }
 
     // ----------------------------------------
@@ -147,6 +114,7 @@
             trimPitch = 0;
             targetPitch = currentPitch;
             outputPitch = _rawPitch;
+            wasPitchDeflected = false;
             return;
         }
 
@@ -160,6 +128,7 @@
                 trimPitch = clamp(vals.fbwPitch, -ATRIM_CONFIG.maxPitchTrim, ATRIM_CONFIG.maxPitchTrim);
             }
             outputPitch = _rawPitch;
+            wasPitchDeflected = false;
             return;
         }
 
@@ -168,6 +137,7 @@
             wasApActive = false;
             targetPitch = currentPitch;
             lastPitch = currentPitch;
+            wasPitchDeflected = false;
         }
 
         // Hover Assist cooperation (eurocopter_hover.js):
@@ -178,6 +148,7 @@
             trimPitch = 0;
             targetPitch = currentPitch;
             outputPitch = _rawPitch;
+            wasPitchDeflected = false;
             return;
         }
 
@@ -187,6 +158,7 @@
             trimPitch = 0;
             targetPitch = currentPitch;
             lastPitch = currentPitch;
+            wasPitchDeflected = false;
         }
 
         if (targetPitch === null) targetPitch = currentPitch;
@@ -197,21 +169,33 @@
         let isPitchDeflected = Math.abs(_rawPitch) > ATRIM_CONFIG.stickDeadzone;
 
         if (isPitchDeflected) {
+            wasPitchDeflected = true;
+
             // PILOT MANEUVERING (Direct Mechanical Link):
             // The pilot directly moves the cyclic. Target attitude tracks current attitude.
             targetPitch = currentPitch;
 
             // Parallel trim motor migration:
-            // Holding forward stick slowly migrates trim forward (relieving force)
-            // Pulling stick back slowly migrates trim aft
-            let migrationTarget = clamp(_rawPitch, -ATRIM_CONFIG.maxPitchTrim, ATRIM_CONFIG.maxPitchTrim);
-            trimPitch += (migrationTarget - trimPitch) * (ATRIM_CONFIG.trimMigrationRate * dt);
-            trimPitch = clamp(trimPitch, -ATRIM_CONFIG.maxPitchTrim, ATRIM_CONFIG.maxPitchTrim);
+            // Holding forward stick (negative _rawPitch) slews trim forward.
+            // Holding aft stick (positive _rawPitch) slews trim aft.
+            // Slew is additive in the direction of deflection; it does not decay when stick centers.
+            let trimSlew = _rawPitch * (ATRIM_CONFIG.trimMigrationRate * dt);
+            trimPitch = clamp(trimPitch + trimSlew, -ATRIM_CONFIG.maxPitchTrim, ATRIM_CONFIG.maxPitchTrim);
 
             // Direct cyclic command = pilot stick + current trim datum
             outputPitch = clamp(_rawPitch + trimPitch, -1, 1);
 
         } else {
+            // BUMPLESS HANDOVER ON STICK RELEASE:
+            // The moment pilot releases cyclic into deadzone, capture the commanded cyclic
+            // into trimPitch and lock the current attitude. Zero cyclic drop, zero flapback snap!
+            if (wasPitchDeflected) {
+                wasPitchDeflected = false;
+                targetPitch = currentPitch;
+                trimPitch = clamp(outputPitch, -ATRIM_CONFIG.maxPitchTrim, ATRIM_CONFIG.maxPitchTrim);
+                lastPitch = currentPitch;
+            }
+
             // HANDS-OFF ATTITUDE RETENTION:
             // Pilot released stick -> hold target pitch attitude hands-off
             let pitchError = targetPitch - currentPitch;
@@ -221,7 +205,9 @@
             trimPitch = clamp(trimPitch, -ATRIM_CONFIG.maxPitchTrim, ATRIM_CONFIG.maxPitchTrim);
 
             // Proportional and damping correction around trim datum
-            let correction = -(pitchError * ATRIM_CONFIG.pitch_Kp) + (pitchRate * (ATRIM_CONFIG.pitch_Kd * 0.01));
+            let pCorr = -(pitchError * ATRIM_CONFIG.pitch_Kp);
+            let dCorr = pitchRate * ATRIM_CONFIG.pitch_Kd;
+            let correction = pCorr + dCorr;
 
             outputPitch = clamp(trimPitch + correction, -1, 1);
         }
@@ -276,12 +262,14 @@
             if (event.key.toLowerCase() === ATRIM_CONFIG.toggleKey.toLowerCase() && !event.shiftKey && !event.ctrlKey && !event.altKey) {
                 atrimEnabled = !atrimEnabled;
                 if (atrimEnabled) {
-                    targetPitch = null;
-                    trimPitch = 0;
+                    targetPitch = (geofs.animation && geofs.animation.values) ? (geofs.animation.values.atilt || null) : null;
+                    trimPitch = clamp(_rawPitch, -ATRIM_CONFIG.maxPitchTrim, ATRIM_CONFIG.maxPitchTrim);
+                    wasPitchDeflected = false;
                     showNotification("EC-135 A.TRIM: ENGAGED");
                 } else {
                     trimPitch = 0;
                     outputPitch = _rawPitch;
+                    wasPitchDeflected = false;
                     showNotification("EC-135 A.TRIM: DISENGAGED (Raw Flight)");
                 }
             }

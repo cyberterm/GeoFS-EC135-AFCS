@@ -31,9 +31,9 @@
 
         // Yaw Heading Hold in Hover
         yawDeadzone: 0.05,        // Pedals deadzone to capture & hold hover heading
-        yaw_Kp: 0.025,            // Heading hold proportional gain
-        yaw_Kd: 0.35,             // Yaw rate damping gain
-        maxYawCmd: 0.40,          // Max yaw command limit
+        yaw_Kp: 0.020,            // Heading hold proportional gain
+        yaw_Kd: 0.80,             // Yaw rate damping gain (matches SAS gyro strength)
+        maxYawCmd: 0.45,          // Max yaw command limit
 
         // Master Toggle Key
         toggleKey: 'g'            // Press 'G' to switch between Hover and Realistic Stack
@@ -47,6 +47,7 @@
     let hoverActive = false;      // Inactive by default
     let isEC135 = false;
     let targetHeading = null;
+    let wasPedalDeflected = false;
     let lastHeading = 0;
     let lastPitch = 0;
     let lastRoll = 0;
@@ -81,40 +82,6 @@
 
     function showNotification(msg) {
         console.log("[EC-135 HOVER] " + msg);
-        try {
-            let id = "ec135-hud-notification";
-            let banner = document.getElementById(id);
-            if (!banner) {
-                banner = document.createElement("div");
-                banner.id = id;
-                banner.style.position = "fixed";
-                banner.style.top = "60px";
-                banner.style.left = "50%";
-                banner.style.transform = "translateX(-50%)";
-                banner.style.backgroundColor = "rgba(10, 15, 20, 0.85)";
-                banner.style.color = "#00ffcc";
-                banner.style.padding = "7px 18px";
-                banner.style.borderRadius = "20px";
-                banner.style.fontFamily = "monospace, sans-serif";
-                banner.style.fontSize = "13px";
-                banner.style.fontWeight = "bold";
-                banner.style.letterSpacing = "0.5px";
-                banner.style.boxShadow = "0 4px 14px rgba(0, 0, 0, 0.6)";
-                banner.style.border = "1px solid rgba(0, 255, 204, 0.35)";
-                banner.style.zIndex = "100000";
-                banner.style.pointerEvents = "none";
-                banner.style.transition = "opacity 0.3s ease";
-                document.body.appendChild(banner);
-            }
-            banner.textContent = msg;
-            banner.style.opacity = "1";
-            clearTimeout(banner._fadeTimer);
-            banner._fadeTimer = setTimeout(function() {
-                banner.style.opacity = "0";
-            }, 2000);
-        } catch (e) {
-            // Silently ignore
-        }
     }
 
     // ----------------------------------------
@@ -142,6 +109,7 @@
             lastPitch = 0;
             lastRoll = 0;
             targetHeading = null;
+            wasPedalDeflected = false;
         }
 
         try {
@@ -187,20 +155,34 @@
             vals.fbwRoll = clamp(rollCmd, -0.6, 0.6);
 
             // ==========================================
-            // 3. YAW: PEDAL HEADING HOLD IN HOVER
+            // 3. YAW: CRITICALLY DAMPED HEADING HOLD
             // ==========================================
             let isPedalDeflected = Math.abs(yawInput) > HOVER_CONFIG.yawDeadzone;
 
             if (isPedalDeflected) {
-                // Pilot commanding turn: follow pedal input directly with rate damping
-                targetHeading = currentHeading;
-                vals.fbwYaw = clamp(yawInput - (yawRate * (HOVER_CONFIG.yaw_Kd * 0.1)), -1.0, 1.0);
+                // Pilot actively turning: SAS-grade rate damping on top of pedal command
+                wasPedalDeflected = true;
+                targetHeading = null;
+                vals.fbwYaw = clamp(yawInput - (yawRate * HOVER_CONFIG.yaw_Kd), -1.0, 1.0);
             } else {
-                // Pedals centered: lock & hold current heading
-                if (targetHeading === null) targetHeading = currentHeading;
-                let hdgError = wrapAngle(targetHeading - currentHeading);
-                let yawCmd = (hdgError * HOVER_CONFIG.yaw_Kp) - (yawRate * (HOVER_CONFIG.yaw_Kd * 0.1));
-                vals.fbwYaw = clamp(yawCmd, -HOVER_CONFIG.maxYawCmd, HOVER_CONFIG.maxYawCmd);
+                // Pedals centered:
+                if (wasPedalDeflected) {
+                    // Turn recently released: brake rotation smoothly with SAS rate damping first
+                    if (Math.abs(yawRate) > 0.04) {
+                        vals.fbwYaw = clamp(-(yawRate * HOVER_CONFIG.yaw_Kd), -HOVER_CONFIG.maxYawCmd, HOVER_CONFIG.maxYawCmd);
+                    } else {
+                        // Rotation has stopped: capture settled heading
+                        wasPedalDeflected = false;
+                        targetHeading = currentHeading;
+                        vals.fbwYaw = 0;
+                    }
+                } else {
+                    // Holding settled heading with critical damping
+                    if (targetHeading === null) targetHeading = currentHeading;
+                    let hdgError = wrapAngle(targetHeading - currentHeading);
+                    let yawCmd = (hdgError * HOVER_CONFIG.yaw_Kp) - (yawRate * HOVER_CONFIG.yaw_Kd);
+                    vals.fbwYaw = clamp(yawCmd, -HOVER_CONFIG.maxYawCmd, HOVER_CONFIG.maxYawCmd);
+                }
             }
 
             // Save states
@@ -281,6 +263,7 @@
             lastPitch = 0;
             lastRoll = 0;
             targetHeading = null;
+            wasPedalDeflected = false;
             hookHoverControls();
             showNotification("EC-135 HOVER: ENGAGED (Auto-Level Active)");
             console.log("[EC-135 HOVER] Engaged. Self-leveling hover active.");

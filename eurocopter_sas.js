@@ -19,10 +19,22 @@
     const EC135_ID = '9';
 
     const SAS_CONFIG = {
-        pitchDamping: 0.8,
-        rollDamping: 0.8,
-        yawDampThreshold: 0.4,
-        yawDampStrength: 1.0
+        // Gyro Rate Damping (Physical units: cyclic / (deg/sec))
+        // Frame-rate independent: identical damping feel across 30, 60, and 144+ FPS
+        pitchDamping: 0.015,          // Cyclic pitch damping per deg/sec
+        rollDamping: 0.015,           // Cyclic roll damping per deg/sec
+        maxSemaPitch: 0.12,           // SEMA series authority limit (+/- 12% cyclic pitch)
+        maxSemaRoll: 0.12,            // SEMA series authority limit (+/- 12% cyclic roll)
+
+        // Rate-Command Yaw Damper (Dynamic Spin Cancellation)
+        yawDampStrength: 0.018,       // Tail rotor damping per deg/sec
+        yawRateSensitivity: 18.0,     // Commanded turn rate (deg/sec) at full pedal
+        maxSemaYaw: 0.20,             // SEMA series authority limit (+/- 20% tail rotor)
+
+        // Collective-to-Yaw Decoupler (Torque Anticipator / Mixing Unit)
+        // Neutralizes the violent torque kick when pulling or lowering collective
+        collectiveTorqueComp: 0.15,   // Tail rotor bias per unit/sec of collective movement
+        maxTorqueComp: 0.15           // Max anticipator tail rotor authority
     };
 
     // State Tracking
@@ -31,11 +43,23 @@
     let lastHeading = 0;
     let lastPitch = 0;
     let lastRoll = 0;
+    let lastThrottle = 0;
+    let lastTime = performance.now();
     let animationFrameId;
 
     // ----------------------------------------
     // 2. HELPERS
     // ----------------------------------------
+    function clamp(val, min, max) {
+        return Math.max(min, Math.min(max, val));
+    }
+
+    function wrapAngle(delta) {
+        while (delta > 180) delta -= 360;
+        while (delta < -180) delta += 360;
+        return delta;
+    }
+
     function checkIsEC135() {
         try {
             return String(geofs.aircraft.instance.id) === String(EC135_ID);
@@ -51,40 +75,6 @@
 
     function showNotification(msg) {
         console.log("[EC-135 SAS] " + msg);
-        try {
-            let id = "ec135-hud-notification";
-            let banner = document.getElementById(id);
-            if (!banner) {
-                banner = document.createElement("div");
-                banner.id = id;
-                banner.style.position = "fixed";
-                banner.style.top = "60px";
-                banner.style.left = "50%";
-                banner.style.transform = "translateX(-50%)";
-                banner.style.backgroundColor = "rgba(10, 15, 20, 0.85)";
-                banner.style.color = "#00ffcc";
-                banner.style.padding = "7px 18px";
-                banner.style.borderRadius = "20px";
-                banner.style.fontFamily = "monospace, sans-serif";
-                banner.style.fontSize = "13px";
-                banner.style.fontWeight = "bold";
-                banner.style.letterSpacing = "0.5px";
-                banner.style.boxShadow = "0 4px 14px rgba(0, 0, 0, 0.6)";
-                banner.style.border = "1px solid rgba(0, 255, 204, 0.35)";
-                banner.style.zIndex = "100000";
-                banner.style.pointerEvents = "none";
-                banner.style.transition = "opacity 0.3s ease";
-                document.body.appendChild(banner);
-            }
-            banner.textContent = msg;
-            banner.style.opacity = "1";
-            clearTimeout(banner._fadeTimer);
-            banner._fadeTimer = setTimeout(function() {
-                banner.style.opacity = "0";
-            }, 2000);
-        } catch (e) {
-            // Silently ignore
-        }
     }
 
     function isHoverActive() {
@@ -98,7 +88,7 @@
     // 3. CORE MATH & DAMPING
     // ----------------------------------------
     function updateSAS() {
-        if (!sasActive || !isEC135) return;
+        if (!sasActive || !isEC135 || !geofs.animation || !geofs.animation.values) return;
 
         let apActive = isAutopilotActive();
         let hoverActive = isHoverActive();
@@ -110,6 +100,8 @@
             lastHeading = 0;
             lastPitch = 0;
             lastRoll = 0;
+            lastThrottle = 0;
+            lastTime = performance.now();
             return;
         }
 
@@ -117,47 +109,76 @@
         if (wasApActive || wasHoverActive) {
             wasApActive = false;
             wasHoverActive = false;
+            lastHeading = 0;
+            lastPitch = 0;
+            lastRoll = 0;
+            lastThrottle = 0;
+            lastTime = performance.now();
             hookSAS();
         }
 
         try {
+            const vals = geofs.animation.values;
+            let now = performance.now();
+            let dt = (now - lastTime) / 1000;
+            lastTime = now;
+
             // Read Current States (|| 0 prevents NaN crashes)
-            let currentHeading = geofs.animation.values.heading360 || 0;
-            let currentPitch = geofs.animation.values.atilt || 0;
-            let currentRoll = geofs.animation.values.aroll || 0;
+            let currentHeading = vals.heading360 || 0;
+            let currentPitch = vals.atilt || 0;
+            let currentRoll = vals.aroll || 0;
+            let currentThrottle = vals.throttle || 0;
 
-            let pitchInput = geofs.animation.values.pitch || 0;
-            let rollInput = geofs.animation.values.roll || 0;
-            let yawInput = geofs.animation.values.yaw || 0;
+            let pitchInput = vals.pitch || 0;
+            let rollInput = vals.roll || 0;
+            let yawInput = vals.yaw || 0;
 
-            if (lastHeading === 0 && lastPitch === 0 && lastRoll === 0) {
+            // Guard against pause, tab switch, or first frame anomalies
+            if (dt <= 0 || dt > 0.5 || (lastHeading === 0 && lastPitch === 0 && lastRoll === 0)) {
                 lastHeading = currentHeading;
                 lastPitch = currentPitch;
                 lastRoll = currentRoll;
+                lastThrottle = currentThrottle;
+                return;
             }
 
-            // YAW DAMPER
-            let rotationDelta = lastHeading - currentHeading;
-            if (rotationDelta > 180) rotationDelta -= 360;
-            if (rotationDelta < -180) rotationDelta += 360;
+            // ==========================================
+            // 1. FRAME-RATE INVARIANT ANGULAR RATES (deg/sec)
+            // ==========================================
+            let pitchRateSec = (currentPitch - lastPitch) / dt;
+            let rollRateSec = (currentRoll - lastRoll) / dt;
+            let yawRateSec = wrapAngle(lastHeading - currentHeading) / dt;
 
-            if (Math.abs(rotationDelta) <= SAS_CONFIG.yawDampThreshold) {
-                geofs.animation.values.fbwYaw = yawInput + (rotationDelta * SAS_CONFIG.yawDampStrength);
-            } else {
-                geofs.animation.values.fbwYaw = yawInput;
-            }
+            // ==========================================
+            // 2. PITCH & ROLL SEMA RATE DAMPING
+            // ==========================================
+            let pitchCorrection = clamp(pitchRateSec * SAS_CONFIG.pitchDamping, -SAS_CONFIG.maxSemaPitch, SAS_CONFIG.maxSemaPitch);
+            let rollCorrection = clamp(rollRateSec * SAS_CONFIG.rollDamping, -SAS_CONFIG.maxSemaRoll, SAS_CONFIG.maxSemaRoll);
 
-            // PITCH & ROLL RATE DAMPING
-            let pitchRate = currentPitch - lastPitch;
-            let rollRate = currentRoll - lastRoll;
+            vals.fbwPitch = clamp(pitchInput + pitchCorrection, -1.0, 1.0);
+            vals.fbwRoll = clamp(rollInput + rollCorrection, -1.0, 1.0);
 
-            geofs.animation.values.fbwPitch = pitchInput + (pitchRate * SAS_CONFIG.pitchDamping);
-            geofs.animation.values.fbwRoll = rollInput + (rollRate * SAS_CONFIG.rollDamping);
+            // ==========================================
+            // 3. YAW DAMPER & COLLECTIVE ANTICIPATOR
+            // ==========================================
+            // Commanded turn rate from pilot pedals (deg/sec)
+            let commandedRateSec = -yawInput * SAS_CONFIG.yawRateSensitivity;
+            let rateErrorSec = yawRateSec - commandedRateSec;
 
-            // Save states
+            // SEMA gyro rate damping: actively cancels uncommanded spin & chatter
+            let damperOutput = clamp(rateErrorSec * SAS_CONFIG.yawDampStrength, -SAS_CONFIG.maxSemaYaw, SAS_CONFIG.maxSemaYaw);
+
+            // Collective-to-Yaw feedforward mixing: cancels torque kick during power changes
+            let collectiveRate = (currentThrottle - lastThrottle) / dt;
+            let torqueComp = clamp(collectiveRate * SAS_CONFIG.collectiveTorqueComp, -SAS_CONFIG.maxTorqueComp, SAS_CONFIG.maxTorqueComp);
+
+            vals.fbwYaw = clamp(yawInput + damperOutput + torqueComp, -1.0, 1.0);
+
+            // Save history states
             lastHeading = currentHeading;
             lastPitch = currentPitch;
             lastRoll = currentRoll;
+            lastThrottle = currentThrottle;
 
         } catch (error) {
             // Silently catch errors
@@ -250,6 +271,8 @@
                         lastHeading = 0;
                         lastPitch = 0;
                         lastRoll = 0;
+                        lastThrottle = 0;
+                        lastTime = performance.now();
                         hookSAS();
                         showNotification("EC-135 SAS: ENGAGED");
                     } else {
@@ -274,6 +297,8 @@
                             lastHeading = 0;
                             lastPitch = 0;
                             lastRoll = 0;
+                            lastThrottle = 0;
+                            lastTime = performance.now();
                             hookSAS();
                             showNotification("EC-135 SAS: ENGAGED");
                         } else {
