@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GeoFS Eurocopter EC-135 AFCS Suite
 // @namespace    https://github.com/cyberterm/GeoFS-EC135-AFCS
-// @version      1.0.0
+// @version      1.0.1
 // @description  Complete Automatic Flight Control System (AFCS) for the GeoFS Eurocopter EC-135. Features Stability Augmentation (SAS), Pitch Auto-Trim (A.TRIM), Auto-Hover, and Cruise Autopilot in a single unified, frame-rate independent flight loop with bumpless state transitions.
 // @author       cyberterm
 // @match        *://*.geo-fs.com/*
@@ -66,18 +66,15 @@
         },
 
         // --- Cruise Autopilot (Altitude & Heading Hold) ---
+        // Altitude mode acts as an upper director commanding A.TRIM target pitch attitude
         ap: {
-            alt_Kp: 3.0,                  // Target V/S per foot of altitude error
+            alt_Kp: 2.0,                  // Target V/S per foot of altitude error
             alt_vsMax: 500,               // Max target vertical speed (ft/min)
 
-            vs_Kp: 0.01,                  // Pitch attitude per ft/min of V/S error
-            vs_Ki: 0.003,                 // Integral trim rate for cruise nose-down angle
+            vs_Kp: 0.02,                 // Pitch attitude adjust per ft/min of V/S error
+            vs_Ki: 0.002,                 // Integral trim rate for cruise attitude
             pitchMin: -15,                // Max climb angle (deg)
             pitchMax: 30,                 // Max cruise nose-down angle (deg)
-
-            pitch_Kp: 0.04,               // Cyclic pitch tracking gain
-            pitch_Kd: 0.80,               // Pitch rate damping
-            cyclicPitchMax: 1.0,
 
             roll_Kp: 0.02,                // Wings-level roll hold gain
             roll_Kd: 0.40,
@@ -134,7 +131,6 @@
         integratedPitchAp: 0,
         hdgIntegralAp: 0,
         hdgLastErrorAp: 0,
-        lastFbwPitchAp: 0,
 
         // Previous sensor history for delta-t rate computations
         lastHeading: 0,
@@ -219,27 +215,30 @@
                 log("HOVER", "Yielded to Autopilot.");
             }
 
+            // AP Upper Director commands through A.TRIM, ensure A.TRIM is active
+            if (!AFCS_STATE.atrimActive) {
+                AFCS_STATE.atrimActive = true;
+                log("A.TRIM", "Armed by Autopilot.");
+            }
+
             // Capture altitude (nearest 100 ft) and current heading
             let currentAltFeet = vals.altThousands || vals.altitude || 0;
             AFCS_STATE.targetAltitude = Math.round(currentAltFeet / 100) * 100;
             AFCS_STATE.targetHeadingAp = Math.round(vals.heading360 || 0);
 
-            // Seamless pitch initialization: initialize cruise trim to current pitch attitude!
+            // Seamless pitch initialization: initialize cruise target to current pitch attitude!
             let currentPitch = vals.atilt || 0;
             AFCS_STATE.integratedPitchAp = clamp(currentPitch, AFCS_CONFIG.ap.pitchMin, AFCS_CONFIG.ap.pitchMax);
+            AFCS_STATE.targetPitchAtrim = currentPitch;
             AFCS_STATE.hdgIntegralAp = 0;
             AFCS_STATE.hdgLastErrorAp = 0;
 
             log("AP", `ENGAGED - ALT ${AFCS_STATE.targetAltitude}ft, HDG ${AFCS_STATE.targetHeadingAp}° (Collective controls airspeed)`);
         } else {
             // Seamless AP Disengage Handover:
-            // A.TRIM inherits the AP's cruise attitude and trim position so there is zero pitch snap
+            // A.TRIM is already executing smoothly at the current attitude and trim position!
             let currentPitch = vals.atilt || 0;
             AFCS_STATE.targetPitchAtrim = currentPitch;
-            if (AFCS_STATE.lastFbwPitchAp !== 0) {
-                AFCS_STATE.trimPitch = clamp(AFCS_STATE.lastFbwPitchAp, -AFCS_CONFIG.atrim.maxPitchTrim, AFCS_CONFIG.atrim.maxPitchTrim);
-                AFCS_STATE.lastBasePitch = AFCS_STATE.trimPitch;
-            }
             AFCS_STATE.wasPitchDeflected = false;
             AFCS_STATE.wasApActive = true;
             log("AP", "DISENGAGED - Smooth handover to Realistic Stack (A.TRIM + SAS).");
@@ -393,64 +392,13 @@
             return;
         }
 
-        // =====================================================================
-        // MODE 1: CRUISE AUTOPILOT (Highest Precedence)
-        // =====================================================================
-        if (AFCS_STATE.apActive) {
-            const apCfg = AFCS_CONFIG.ap;
-
-            // Outer Altitude Loop -> Target Vertical Speed
-            let altError = AFCS_STATE.targetAltitude - currentAltFeet;
-            let targetVS = clamp(altError * apCfg.alt_Kp, -apCfg.alt_vsMax, apCfg.alt_vsMax);
-
-            // Middle V/S Loop -> Target Pitch Attitude
-            let vsError = targetVS - currentVS;
-            AFCS_STATE.integratedPitchAp -= (vsError * apCfg.vs_Ki) * dt;
-            AFCS_STATE.integratedPitchAp = clamp(AFCS_STATE.integratedPitchAp, apCfg.pitchMin, apCfg.pitchMax);
-
-            let targetPitch = clamp(AFCS_STATE.integratedPitchAp - (vsError * apCfg.vs_Kp), apCfg.pitchMin, apCfg.pitchMax);
-
-            // Inner Pitch Tracking Loop -> Cyclic Pitch (fbwPitch)
-            let pitchError = targetPitch - currentPitch;
-            let pitchCmd = -((pitchError * apCfg.pitch_Kp) - (pitchRateSec * 0.01667 * apCfg.pitch_Kd));
-            let fbwPitch = clamp(pitchCmd, -apCfg.cyclicPitchMax, apCfg.cyclicPitchMax);
-
-            // Roll Hold (Wings Level) -> Cyclic Roll (fbwRoll)
-            let rollError = 0 - currentRoll;
-            let rollCmd = -((rollError * apCfg.roll_Kp) - (rollRateSec * 0.01667 * apCfg.roll_Kd));
-            let fbwRoll = clamp(rollCmd, -apCfg.roll_outputMax, apCfg.roll_outputMax);
-
-            // Heading Hold PID -> Tail Rotor (fbwYaw)
-            let hdgError = wrapAngle(AFCS_STATE.targetHeadingAp - currentHeading);
-            AFCS_STATE.hdgIntegralAp += hdgError * dt;
-            AFCS_STATE.hdgIntegralAp = clamp(AFCS_STATE.hdgIntegralAp, -apCfg.hdg_integralMax, apCfg.hdg_integralMax);
-
-            let hdgDerivative = (hdgError - AFCS_STATE.hdgLastErrorAp);
-            AFCS_STATE.hdgLastErrorAp = hdgError;
-
-            let hdgOutput = (apCfg.hdg_Kp * hdgError) + (apCfg.hdg_Ki * AFCS_STATE.hdgIntegralAp) + (apCfg.hdg_Kd * hdgDerivative);
-            let fbwYaw = clamp(hdgOutput, -apCfg.hdg_outputMax, apCfg.hdg_outputMax);
-
-            // Output to swashplate and tail
-            vals.fbwPitch = fbwPitch;
-            vals.fbwRoll = fbwRoll;
-            vals.fbwYaw = fbwYaw;
-            AFCS_STATE.lastFbwPitchAp = fbwPitch;
-
-            // Synchronize lower-layer datums so disconnecting AP is 100% bump-free
-            AFCS_STATE.trimPitch = clamp(fbwPitch, -AFCS_CONFIG.atrim.maxPitchTrim, AFCS_CONFIG.atrim.maxPitchTrim);
-            AFCS_STATE.targetPitchAtrim = currentPitch;
-
-            // Save history states
-            AFCS_STATE.lastHeading = currentHeading;
-            AFCS_STATE.lastPitch = currentPitch;
-            AFCS_STATE.lastRoll = currentRoll;
-            AFCS_STATE.lastThrottle = currentThrottle;
-            return;
-        }
+        // Base control surface demands (initialized to raw pilot inputs)
+        let basePitch = rawPitch;
+        let baseRoll = rawRoll;
+        let baseYaw = rawYaw;
 
         // =====================================================================
-        // MODE 2: HOVER ASSIST (Self-Leveling Angle Mode & Heading Hold)
+        // MODE 1: HOVER ASSIST (Self-Leveling Angle Mode & Heading Hold)
         // =====================================================================
         if (AFCS_STATE.hoverActive) {
             const hvrCfg = AFCS_CONFIG.hover;
@@ -516,13 +464,46 @@
         }
 
         // =====================================================================
-        // MODE 3: REALISTIC FLIGHT STACK (A.TRIM + SAS)
+        // MODE 2: REALISTIC FLIGHT STACK (A.TRIM + SAS)
         // =====================================================================
-        let basePitch = rawPitch;
-        let baseRoll = rawRoll;
-        let baseYaw = rawYaw;
 
-        // --- 3A. A.TRIM LONGITUDINAL PITCH LOOP ---
+        // --- 2A. CRUISE AUTOPILOT UPPER MODE DIRECTOR ---
+        // When AP is active, it guides A.TRIM's target pitch attitude, holds wings level, and locks heading
+        if (AFCS_STATE.apActive) {
+            const apCfg = AFCS_CONFIG.ap;
+
+            // Outer Altitude Loop -> Target Vertical Speed
+            let altError = AFCS_STATE.targetAltitude - currentAltFeet;
+            let targetVS = clamp(altError * apCfg.alt_Kp, -apCfg.alt_vsMax, apCfg.alt_vsMax);
+
+            // Middle V/S Loop -> Target Pitch Attitude
+            let vsError = targetVS - currentVS;
+            AFCS_STATE.integratedPitchAp -= (vsError * apCfg.vs_Ki) * dt;
+            AFCS_STATE.integratedPitchAp = clamp(AFCS_STATE.integratedPitchAp, apCfg.pitchMin, apCfg.pitchMax);
+
+            let targetPitch = clamp(AFCS_STATE.integratedPitchAp - (vsError * apCfg.vs_Kp), apCfg.pitchMin, apCfg.pitchMax);
+
+            // Directly guide A.TRIM hands-off pitch attitude director!
+            AFCS_STATE.targetPitchAtrim = targetPitch;
+
+            // Wings-Level Roll Hold -> Cyclic Roll
+            let rollError = 0 - currentRoll;
+            let rollCmd = -((rollError * apCfg.roll_Kp) - (rollRateSec * 0.01667 * apCfg.roll_Kd));
+            baseRoll = clamp(rollCmd, -apCfg.roll_outputMax, apCfg.roll_outputMax);
+
+            // Heading Hold PID -> Tail Rotor
+            let hdgError = wrapAngle(AFCS_STATE.targetHeadingAp - currentHeading);
+            AFCS_STATE.hdgIntegralAp += hdgError * dt;
+            AFCS_STATE.hdgIntegralAp = clamp(AFCS_STATE.hdgIntegralAp, -apCfg.hdg_integralMax, apCfg.hdg_integralMax);
+
+            let hdgDerivative = (hdgError - AFCS_STATE.hdgLastErrorAp);
+            AFCS_STATE.hdgLastErrorAp = hdgError;
+
+            let hdgOutput = (apCfg.hdg_Kp * hdgError) + (apCfg.hdg_Ki * AFCS_STATE.hdgIntegralAp) + (apCfg.hdg_Kd * hdgDerivative);
+            baseYaw = clamp(hdgOutput, -apCfg.hdg_outputMax, apCfg.hdg_outputMax);
+        }
+
+        // --- 2B. A.TRIM LONGITUDINAL PITCH LOOP ---
         if (AFCS_STATE.atrimActive) {
             const atrimCfg = AFCS_CONFIG.atrim;
             let isPitchDeflected = Math.abs(rawPitch) > atrimCfg.stickDeadzone;
