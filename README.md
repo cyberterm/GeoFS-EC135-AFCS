@@ -10,19 +10,19 @@ Designed to eliminate twitchy stock handling, remove the exhausting need for con
 
 ### 1. Installation
 
-* **Option 1: Greasy Fork (Recommended)**
-  * Install via **[Greasy Fork](https://greasyfork.org/en/scripts/geofs-eurocopter-ec-135-afcs-suite)** (requires [Tampermonkey](https://www.tampermonkey.net/) or [Violentmonkey](https://violentmonkey.github.io/)).
-  * Greasy Fork handles 1-click installation and automatic background update checks.
+#### Primary Method (Recommended)
 
-* **Option 2: Direct GitHub 1-Click Install**
-  * If you already have Tampermonkey installed:  
-    👉 **[Install from GitHub Raw](https://raw.githubusercontent.com/cyberterm/GeoFS-EC135-AFCS/main/eurocopter_afcs.user.js)**
+[![Install from Greasy Fork](https://img.shields.io/badge/Greasy_Fork-Install_AFCS_Suite-04aa6d?style=for-the-badge&logo=tampermonkey&logoColor=white)](https://greasyfork.org/en/scripts/597871-geofs-eurocopter-ec-135-afcs-suite)
 
-* **Option 3: Browser Console (No Extension Needed)**
-  * For restricted devices (Chromebooks/managed browsers) where extensions are blocked:
-    1. Spawn in the EC-135 in GeoFS.
-    2. Open Developer Tools (<kbd>F12</kbd> or right-click $\to$ **Inspect** $\to$ **Console**).
-    3. Paste the contents of [`eurocopter_afcs.user.js`](eurocopter_afcs.user.js) and press <kbd>Enter</kbd>.
+**[Click here to Install via Greasy Fork](https://greasyfork.org/en/scripts/597871-geofs-eurocopter-ec-135-afcs-suite)**  
+*(Requires [Tampermonkey](https://www.tampermonkey.net/) or [Violentmonkey](https://violentmonkey.github.io/). Provides 1-click installation and automatic background updates).*
+
+#### Alternative Methods
+* **Direct GitHub Raw:** If you prefer installing straight from GitHub, you can use the [GitHub Raw Script Link](https://raw.githubusercontent.com/cyberterm/GeoFS-EC135-AFCS/main/eurocopter_afcs.user.js).
+* **Browser Console:** For restricted devices (Chromebooks/managed browsers) where extensions are blocked:
+  1. Spawn in the EC-135 in GeoFS.
+  2. Open Developer Tools (<kbd>F12</kbd> or right-click $\to$ **Inspect** $\to$ **Console**).
+  3. Paste the contents of [`eurocopter_afcs.user.js`](eurocopter_afcs.user.js) and press <kbd>Enter</kbd>.
 
 *(Individual standalone modular scripts are also preserved in the `standalone-scripts` branch for specialized use cases).*
 
