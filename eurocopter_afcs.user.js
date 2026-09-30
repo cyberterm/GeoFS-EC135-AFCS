@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GeoFS Eurocopter EC-135 AFCS Suite
 // @namespace    https://github.com/cyberterm/GeoFS-EC135-AFCS
-// @version      1.0.1
+// @version      1.0.2
 // @description  Complete Automatic Flight Control System (AFCS) for the GeoFS Eurocopter EC-135. Features Stability Augmentation (SAS), Pitch Auto-Trim (A.TRIM), Auto-Hover, and Cruise Autopilot in a single unified, frame-rate independent flight loop with bumpless state transitions.
 // @author       cyberterm
 // @match        *://*.geo-fs.com/*
@@ -190,6 +190,43 @@
         console.log(`[EC-135 ${system}] ${msg}`);
     }
 
+    function notify(msg, duration = 2000) {
+        try {
+            let id = "ec135-hud-notification";
+            let banner = document.getElementById(id);
+            if (!banner) {
+                banner = document.createElement("div");
+                banner.id = id;
+                banner.style.position = "fixed";
+                banner.style.top = "60px";
+                banner.style.left = "50%";
+                banner.style.transform = "translateX(-50%)";
+                banner.style.backgroundColor = "rgba(10, 15, 20, 0.85)";
+                banner.style.color = "#00ffcc";
+                banner.style.padding = "7px 18px";
+                banner.style.borderRadius = "20px";
+                banner.style.fontFamily = "monospace, sans-serif";
+                banner.style.fontSize = "13px";
+                banner.style.fontWeight = "bold";
+                banner.style.letterSpacing = "0.5px";
+                banner.style.boxShadow = "0 4px 14px rgba(0, 0, 0, 0.6)";
+                banner.style.border = "1px solid rgba(0, 255, 204, 0.35)";
+                banner.style.zIndex = "100000";
+                banner.style.pointerEvents = "none";
+                banner.style.transition = "opacity 0.3s ease";
+                document.body.appendChild(banner);
+            }
+            banner.textContent = msg;
+            banner.style.opacity = "1";
+            clearTimeout(banner._fadeTimer);
+            banner._fadeTimer = setTimeout(function() {
+                banner.style.opacity = "0";
+            }, duration);
+        } catch (e) {
+            // Silently ignore
+        }
+    }
+
     // -------------------------------------------------------------------------
     // 4. MODE SWITCHING & BUMPLESS HANDOVERS
     // -------------------------------------------------------------------------
@@ -234,6 +271,7 @@
             AFCS_STATE.hdgLastErrorAp = 0;
 
             log("AP", `ENGAGED - ALT ${AFCS_STATE.targetAltitude}ft, HDG ${AFCS_STATE.targetHeadingAp}° (Collective controls airspeed)`);
+            notify(`EC-135 AP: ON (${AFCS_STATE.targetAltitude}ft | ${AFCS_STATE.targetHeadingAp}°)`);
         } else {
             // Seamless AP Disengage Handover:
             // A.TRIM is already executing smoothly at the current attitude and trim position!
@@ -242,6 +280,7 @@
             AFCS_STATE.wasPitchDeflected = false;
             AFCS_STATE.wasApActive = true;
             log("AP", "DISENGAGED - Smooth handover to Realistic Stack (A.TRIM + SAS).");
+            notify("EC-135 AP: OFF");
         }
     }
 
@@ -266,6 +305,7 @@
             AFCS_STATE.trimPitch = 0; // Neutralize forward cruise trim for hover
             AFCS_STATE.lastBasePitch = 0;
             log("HOVER", "ENGAGED - Self-leveling cyclic & heading hold active.");
+            notify("EC-135 Hover: ON");
         } else {
             // Disengaging Hover: return cleanly to Realistic Stack
             let currentPitch = vals.atilt || 0;
@@ -275,6 +315,7 @@
             AFCS_STATE.wasPitchDeflected = false;
             AFCS_STATE.wasHoverActive = true;
             log("HOVER", "DISENGAGED - Returned to realistic flight stack.");
+            notify("EC-135 Hover: OFF");
         }
     }
 
@@ -290,12 +331,14 @@
             }
             AFCS_STATE.wasPitchDeflected = false;
             log("A.TRIM", "ENGAGED - Hands-off pitch attitude retention active.");
+            notify("EC-135 A.TRIM: ON");
         } else {
             AFCS_STATE.trimPitch = 0;
             AFCS_STATE.lastBasePitch = 0;
             AFCS_STATE.targetPitchAtrim = null;
             AFCS_STATE.wasPitchDeflected = false;
             log("A.TRIM", "DISENGAGED - Direct raw pilot pitch control.");
+            notify("EC-135 A.TRIM: OFF");
         }
     }
 
@@ -308,8 +351,10 @@
             AFCS_STATE.lastThrottle = 0;
             AFCS_STATE.lastTime = performance.now();
             log("SAS", "ENGAGED - Series gyro rate damping & torque anticipator active.");
+            notify("EC-135 SAS: ON");
         } else {
             log("SAS", "DISENGAGED - Gyro rate damping disabled (Direct manual control).");
+            notify("EC-135 SAS: OFF");
         }
     }
 
@@ -729,6 +774,7 @@
                 }
                 console.log("%c[EC-135 AFCS Suite] Engaged & Active! Ready for flight.", "color: #00ffcc; font-weight: bold;");
                 console.log("[EC-135 AFCS] Controls: 'Z' = A.TRIM | 'CapsLock' = SAS | 'G' = Hover Assist | 'A' = Cruise Autopilot");
+                notify("EC-135 AFCS: Active (SAS + A.TRIM)", 3500);
             } else {
                 console.log("[EC-135 AFCS] Current aircraft is not an EC-135. Suite standing by.");
             }
@@ -758,6 +804,7 @@
                                 geofs.autopilot.turnOff();
                             }
                             console.log("%c[EC-135 AFCS] EC-135 detected. AFCS Stack armed by default.", "color: #00ffcc; font-weight: bold;");
+                            notify("EC-135 AFCS: Active (SAS + A.TRIM)", 3500);
                         } else {
                             unhookAFCSParts();
                             AFCS_STATE.apActive = false;
