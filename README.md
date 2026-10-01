@@ -109,6 +109,27 @@ A cascaded 3-loop flight director and autopilot:
 
 ---
 
+## Roadmap
+
+### v1.1
+- [ ] **Beep Trim:** Fine-tune target heading and altitude using hat-switch style key adjustments without disengaging AP.
+- [ ] **Coordinated Turn Roll-In:** Smooth roll-into-turn banking mechanics for high-speed cruising rather than flat tail-rotor yawing.
+- [ ] **Smart Ground Decoupling:** Automatic ground-idle state detection preventing trim accumulation and ensuring safe landings on sloped helipads.
+
+### v1.2
+- [ ] **NAV Mode:** Waypoint and flight plan route tracking.
+- [ ] **Vertical Speed Selection (V.VEL):** Dial in specific climb or descent rates (e.g., -500 ft/min approach).
+- [ ] **GeoFS AP Panel Integration:** Proper two-way integration with the native GeoFS autopilot control window.
+
+### v2.0
+- [ ] **4-Axis Autopilot Integration:** Full 4th-axis collective actuator automation with altitude hover and airspeed selection loop.
+- [ ] **GPS Position Hold (True Auto-Hover):** Geographic ground-drift zeroing to lock the helicopter stationary over a helipad even in gusty crosswinds.
+- [ ] **Authentic Audio Cues (Synthesized Web Audio):** Native zero-asset audio tones for AP disconnect chime, mode switches, and flight limit alerts.
+- [ ] **Airbus CAD / Instrument Panel:** Authentic Caution & Advisory Display (CAD) status indicators and avionics strip.
+- [ ] **Configurable Keybindings & Controls:** In-game binding customization for gamepads, flight sticks, and international keyboard layouts.
+
+---
+
 ## License
 
 Created by **cyberterm**. Free and open-source for the GeoFS flight simulation community.
