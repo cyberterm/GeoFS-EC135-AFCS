@@ -10,6 +10,7 @@
 // @grant        none
 // @homepageURL  https://github.com/cyberterm/GeoFS-EC135-AFCS
 // @supportURL   https://github.com/cyberterm/GeoFS-EC135-AFCS/issues
+// @license      MIT
 // @updateURL    https://raw.githubusercontent.com/cyberterm/GeoFS-EC135-AFCS/main/eurocopter_afcs.user.js
 // @downloadURL  https://raw.githubusercontent.com/cyberterm/GeoFS-EC135-AFCS/main/eurocopter_afcs.user.js
 // ==/UserScript==

@@ -132,4 +132,4 @@ A cascaded 3-loop flight director and autopilot:
 
 ## License
 
-Created by **cyberterm**. Free and open-source for the GeoFS flight simulation community.
+This project is licensed under the [MIT License](LICENSE) - created by **cyberterm**. Free and open-source for the GeoFS flight simulation community.
