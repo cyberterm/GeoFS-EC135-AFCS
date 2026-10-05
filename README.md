@@ -39,6 +39,13 @@ You do not need to press any keys to enjoy realistic, stable flight. The core st
 | <kbd>A</kbd> | **Cruise Autopilot** | Optional | **Long cross-country flights:** Locks barometric altitude and heading. Adjust your airspeed using the collective. |
 | <kbd>G</kbd> | **Hover Assist** | Optional | **Helipad landings & hovering:** Hands-off self-leveling to 0° wings-level hover with automatic heading lock. |
 
+#### Autopilot In-Flight Adjustments (Beep Trim)
+While **Cruise Autopilot (<kbd>A</kbd>)** is engaged, use the arrow keys to adjust targets without disengaging:
+| Key | Adjustment | Fast Step (<kbd>Shift</kbd> + Key) | Cockpit Feedback |
+| :---: | :--- | :--- | :--- |
+| <kbd>▲ Up</kbd> / <kbd>▼ Down</kbd> | Altitude $\pm 100\text{ ft}$ | $\pm 500\text{ ft}$ fast climb/descent | Live PFD/altimeter tape sync |
+| <kbd>◄ Left</kbd> / <kbd>► Right</kbd> | Heading $\pm 1^\circ$ | $\pm 5^\circ$ course turn | Live HSI heading bug sync |
+
 #### Advanced System Diagnostics (Optional)
 These keys are only needed if you want to disarm individual systems to test raw helicopter physics:
 | Key | System Toggle | Description |
@@ -53,8 +60,8 @@ These keys are only needed if you want to disarm individual systems to test raw 
 ### 1. Normal Flight (Takeoff & Fast Cruise)
 * **On Spawn:** Both **SAS** and **A.TRIM** arm automatically (replicating a real EC-135 cockpit startup).
 * **Accelerating:** Pull collective to climb, then push the cyclic forward to pitch down and accelerate (e.g. $-8^\circ$ nose dip for 120 kts).
-* **Hands-Off Cruise:** Release the cyclic. **A.TRIM** captures and holds that nose-down attitude hands-off. You can fly long distances at high speed without touching the pitch axis or holding continuous forward pressure.
-* **Maneuvering:** Pushing or pulling the stick moves the cyclic smoothly. When you find a new desired pitch angle and release the stick, A.TRIM captures the new attitude automatically.
+* **Hands-Off Cruise:** Release the cyclic. **A.TRIM** smoothly captures and holds that nose-down attitude hands-off. You can fly long distances at high speed without touching the pitch axis or holding continuous forward pressure.
+* **Maneuvering:** Pushing or pulling the stick moves the cyclic smoothly. With our **Settle-Then-Latch** logic, releasing after aggressive pitch maneuvers lets the nose coast naturally to a halt and lock into its new resting attitude — **zero rubber-banding or snapback**.
 
 ### 2. Precision Hovering & Landings (<kbd>G</kbd>)
 * **Entering Hover:** As you approach a helipad, press <kbd>G</kbd>. A.TRIM yields and **Hover Assist** takes over.
@@ -65,8 +72,10 @@ These keys are only needed if you want to disarm individual systems to test raw 
 ### 3. Long-Distance Cruise Autopilot (<kbd>A</kbd>)
 * **Engaging:** At cruising altitude, press <kbd>A</kbd> (or click the cockpit autopilot button).
 * **Altitude & Heading Hold:** The autopilot captures your current barometric altitude (rounded to the nearest 100 ft) and heading.
-* **Speed Management:** Raising or lowering collective changes your airspeed. The autopilot automatically trims cyclic pitch to hold exact altitude as power changes.
-* **Disengaging:** Press <kbd>A</kbd> again. The system performs a bumpless handover back to manual flight.
+* **Beep Trim Adjustments:** Tap arrow keys to fine-tune altitude and heading live on your cockpit tapes.
+* **Coordinated Banking:** In cruise, turns roll in up to $18^\circ$ of bank with cyclic roll rather than dragging the fuselage flat with tail rotor yaw.
+* **Disengaging:** Press <kbd>A</kbd> again. The system performs a sanitized, bumpless handover back to manual flight with ample active control headroom.
+* **Touchdown Safety:** If you land with AP active, the system automatically disengages on ground contact and flushes all integrators to ensure a clean, stable subsequent takeoff.
 
 ---
 
@@ -78,13 +87,12 @@ For pilots and developers interested in the avionics and mathematics behind the 
 Replicates the high-frequency series actuators (SEMAs) of the real Eurocopter EC-135:
 * **Gyro Rate Damping:** Dampens pitch, roll, and yaw angular rates ($\text{deg/sec}$) calculated frame-rate independently ($\Delta t$), ensuring identical flight feel across 30, 60, and 144+ FPS.
 * **Progressive Damping Blend on Yaw:** Hands-off pedals receive 100% gyro damping to cancel spin and weathercocking. When maneuvering ($|\text{pedal}| > 0.03$), damping fades smoothly to prevent control fighting or sluggish turns.
-* **Collective-to-Yaw Mixing (Torque Anticipator):** A filtered feedforward compensator applies tail rotor bias during collective pulls, neutralizing the violent torque kick before yaw displacement can develop.
+* **Collective-to-Yaw Mixing (Torque Anticipator):** A filtered feedforward compensator applies tail rotor bias during collective pulls, neutralizing violent torque kick before yaw displacement can develop.
 
 ### 2. Pitch Auto-Trim (A.TRIM)
-Replicates the electric parallel trim actuator of the EC-135:
+Replicates the electric parallel trim actuator of the EC-135 with authentic aerospace control laws:
 * **Flapback Counter-Torque:** Natural rotor aerodynamics cause main rotor flapback, pitching the nose up as forward airspeed increases. A.TRIM builds and maintains the steady forward cyclic needed to counteract flapback hands-off.
-* **Parallel Trim Migration:** Holding stick deflection forward or aft slews the trim datum progressively, eliminating residual stick force.
-* **Bumpless Handover:** Releasing the stick smoothly transfers commanded cyclic into the trim register with zero cyclic drop or ballooning.
+* **Settle-Then-Latch Attitude Capture:** When releasing the cyclic from an aggressive pitch maneuver, A.TRIM allows the nose to coast naturally while angular rate subsides ($|\dot{\theta}| < 1.5^\circ/\text{sec}$), latching the resting attitude with zero snapback or rubber-banding.
 
 ### 3. Hover Assist
 A specialized low-speed control augmentation mode:
@@ -93,10 +101,12 @@ A specialized low-speed control augmentation mode:
 
 ### 4. Cruise Autopilot (AP)
 A cascaded 3-loop flight director and autopilot:
-* **Outer Altitude Loop:** Converts altitude error to target vertical speed ($\pm 500\text{ ft/min}$).
-* **Middle V/S Loop:** Integrates vertical speed error to calculate the exact nose-down pitch angle required for the current collective setting.
-* **Inner Pitch Loop:** Tracks target attitude and drives the swashplate cyclic with rate damping.
-* **Heading Hold PID:** Proportional-Integral-Derivative tail rotor controller with anti-windup clamping.
+* **Outer Altitude Loop:** Converts altitude error to target vertical speed ($\pm 750\text{ ft/min}$).
+* **Middle V/S Loop:** PID director with vertical acceleration damping (`vs_Kd`) and realistic pitch limits ($-10^\circ$ climb to $+12^\circ$ cruise dip) that trims the exact attitude needed to match target V/S without integrator windup.
+* **Slew-Rate Limiter:** Limits flight director pitch commands to $3.5^\circ/\text{sec}$, simulating real electric trim jacks and eliminating sudden cyclic jerks.
+* **Speed-Scheduled Coordinated Turning:** Airspeed-scheduled turn director that rolls up to $18^\circ$ of bank with cyclic roll above $60\text{ kts}$ while fading pedal yaw to pure turn coordination.
+* **Derivative Kick Elimination:** Uses physical gyro yaw rate damping on measurement (`yawRateSec`), guaranteeing zero tail rotor twitching when stepping through heading targets.
+* **Ground Decoupling:** Auto-disengages on touchdown and flushes all integrators to prevent ground resonance or post-touchdown ballooning.
 
 ---
 
@@ -104,7 +114,7 @@ A cascaded 3-loop flight director and autopilot:
 
 * **Input Hardware:** 100% compatible with Mouse Flight, Keyboard controls, and USB Flight Sticks / Gamepads (HTML5 Gamepad API).
 * **Frame-Rate Invariant:** All integral, derivative, and damping calculations are normalized against `performance.now()` $\Delta t$ delta time.
-* **Clean Logging:** All status notifications are delivered cleanly to the browser Developer Console (`[EC-135 AFCS]`), leaving your cockpit view free of immersion-breaking HUD banners.
+* **Clean Logging:** Status notifications are delivered cleanly via an auto-fading HUD pill banner and browser Developer Console (`[EC-135 AFCS]`), leaving your cockpit view free of clutter.
 * **Fail-Safe Flight Loop:** The internal animation loop is isolated in a protected execution block, ensuring flight controls remain responsive under all conditions.
 
 ---
@@ -112,9 +122,10 @@ A cascaded 3-loop flight director and autopilot:
 ## Roadmap
 
 ### v1.1
-- [ ] **Beep Trim:** Fine-tune target heading and altitude using hat-switch style key adjustments without disengaging AP.
-- [ ] **Coordinated Turn Roll-In:** Smooth roll-into-turn banking mechanics for high-speed cruising rather than flat tail-rotor yawing.
-- [ ] **Smart Ground Decoupling:** Automatic ground-idle state detection preventing trim accumulation and ensuring safe landings on sloped helipads.
+- [x] **Beep Trim:** Fine-tune target heading and altitude using arrow keys (<kbd>Shift</kbd> for fast step) with live PFD/HSI bug synchronization.
+- [x] **Coordinated Turn Roll-In:** Smooth roll-into-turn banking mechanics for high-speed cruising rather than flat tail-rotor yawing.
+- [x] **Smart Ground Decoupling:** Automatic ground-idle state detection and AP auto-disengagement on touchdown, preventing trim accumulation on landing.
+- [x] **Improved A.TRIM Handling:** Settle-then-latch attitude capture (zero rubber-banding on release), expanded parallel trim headroom (0.85), and sanitized AP handover. PID finetuning.
 
 ### v1.2
 - [ ] **NAV Mode:** Waypoint and flight plan route tracking.

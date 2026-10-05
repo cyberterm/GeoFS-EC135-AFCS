@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GeoFS Eurocopter EC-135 AFCS Suite
 // @namespace    https://github.com/cyberterm/GeoFS-EC135-AFCS
-// @version      1.0.2
+// @version      1.1.0
 // @description  Complete Automatic Flight Control System (AFCS) for the GeoFS Eurocopter EC-135. Features Stability Augmentation (SAS), Pitch Auto-Trim (A.TRIM), Auto-Hover, and Cruise Autopilot in a single unified, frame-rate independent flight loop with bumpless state transitions.
 // @author       cyberterm
 // @match        *://*.geo-fs.com/*
@@ -44,10 +44,10 @@
         atrim: {
             stickDeadzone: 0.03,          // Stick threshold for hands-off retention
             trimMigrationRate: 0.15,      // Migration rate per second of held stick deflection
-            pitch_Kp: 0.035,              // Retention proportional gain (cyclic / deg)
-            pitch_Ki: 0.035,              // Retention integral trim gain against flapback
-            pitch_Kd: 0.020,              // Retention pitch rate damping
-            maxPitchTrim: 0.75            // Maximum parallel trim authority
+            pitch_Kp: 0.02,              // Base retention proportional gain (cyclic / deg)
+            pitch_Ki: 0.02,              // Base retention integral trim gain against flapback
+            pitch_Kd: 0.01,              // Retention pitch rate damping
+            maxPitchTrim: 0.85            // Maximum parallel trim authority (expanded headroom for high-speed cruise)
         },
 
         // --- Hover Assist (Self-Leveling Angle Mode & Heading Hold) ---
@@ -69,19 +69,25 @@
         // --- Cruise Autopilot (Altitude & Heading Hold) ---
         // Altitude mode acts as an upper director commanding A.TRIM target pitch attitude
         ap: {
-            alt_Kp: 2.0,                  // Target V/S per foot of altitude error
-            alt_vsMax: 500,               // Max target vertical speed (ft/min)
+            alt_Kp: 4.0,                  // Target V/S per foot of altitude error (smooth, cushioned flare)
+            alt_vsMax: 750,               // Max target vertical speed (ft/min)
 
-            vs_Kp: 0.02,                 // Pitch attitude adjust per ft/min of V/S error
-            vs_Ki: 0.002,                 // Integral trim rate for cruise attitude
-            pitchMin: -15,                // Max climb angle (deg)
-            pitchMax: 30,                 // Max cruise nose-down angle (deg)
+            vs_Kp: 0.02,                 // Pitch attitude adjustment per ft/min of V/S error
+            vs_Ki: 0.004,                // Integral trim rate matching pitch attitude to V/S
+            vs_Kd: 0.03,                 // Derivative rate damping (braking) on vertical acceleration
+            pitchMin: -10,                // Max climb angle (deg) - realistic cruise envelope
+            pitchMax: 12,                 // Max cruise nose-down angle (deg) - prevents phantom dive & trim windup
 
-            roll_Kp: 0.02,                // Wings-level roll hold gain
-            roll_Kd: 0.40,
-            roll_outputMax: 0.35,
+            // Roll & Coordinated Turn Settings
+            roll_Kp: 0.025,               // Roll attitude tracking gain
+            roll_Kd: 0.40,                // Roll rate damping
+            roll_outputMax: 0.35,         // Max cyclic roll command
+            bank_Kp: 0.90,                // Target bank angle per degree of heading error (deg bank / deg error)
+            maxBankAngle: 18,             // Maximum bank angle in coordinated turn (deg)
+            turnTransitionMinIas: 45,     // Airspeed where roll banking starts (kts)
+            turnTransitionMaxIas: 60,     // Airspeed where turn is 100% coordinated roll (kts)
 
-            hdg_Kp: 0.015,                // Heading hold PID gains
+            hdg_Kp: 0.02,                 // Heading hold PID gains
             hdg_Ki: 0.0003,
             hdg_Kd: 0.40,
             hdg_integralMax: 20,
@@ -121,6 +127,7 @@
         lastBasePitch: 0,                 // Last commanded cyclic pitch for bumpless handover
         targetPitchAtrim: null,           // Reference pitch attitude held hands-off
         wasPitchDeflected: false,         // Transition tracking for bumpless handover
+        pitchReleaseTime: 0,              // Timestamp for settle-then-latch attitude capture on stick release
 
         // Hover Assist state
         targetHeadingHover: null,
@@ -129,7 +136,9 @@
         // Autopilot state
         targetAltitude: 0,
         targetHeadingAp: 0,
-        integratedPitchAp: 0,
+        cruisePitchDatum: 0,              // Nominal baseline cruise pitch attitude
+        integratedPitchAp: 0,             // Maintained for backward compatibility
+        lastVS: null,                     // Previous vertical speed for rate damping (braking)
         hdgIntegralAp: 0,
         hdgLastErrorAp: 0,
 
@@ -185,6 +194,64 @@
                 btn.classList.remove("geofs-active");
             }
         });
+    }
+
+    function syncAPInstrumentBugs() {
+        try {
+            if (typeof geofs !== 'undefined') {
+                if (geofs.autopilot) {
+                    geofs.autopilot.values = geofs.autopilot.values || {};
+                    // Altitude bug
+                    geofs.autopilot.values.altitude = AFCS_STATE.targetAltitude;
+                    geofs.autopilot.targetAltitude = AFCS_STATE.targetAltitude;
+
+                    // Heading / Course bug: GeoFS autopilot and HSI/PFD instruments use 'course'
+                    geofs.autopilot.values.course = AFCS_STATE.targetHeadingAp;
+                    geofs.autopilot.values.heading = AFCS_STATE.targetHeadingAp;
+                    geofs.autopilot.targetHeading = AFCS_STATE.targetHeadingAp;
+                    geofs.autopilot.targetCourse = AFCS_STATE.targetHeadingAp;
+                    geofs.autopilot.course = AFCS_STATE.targetHeadingAp;
+                    geofs.autopilot.heading = AFCS_STATE.targetHeadingAp;
+
+                    if (typeof geofs.autopilot.setCourse === 'function') {
+                        geofs.autopilot.setCourse(Math.round(AFCS_STATE.targetHeadingAp));
+                    }
+                    if (typeof geofs.autopilot.setAltitude === 'function') {
+                        geofs.autopilot.setAltitude(Math.round(AFCS_STATE.targetAltitude));
+                    }
+                }
+
+                if (geofs.animation && geofs.animation.values) {
+                    geofs.animation.values.targetAltitude = AFCS_STATE.targetAltitude;
+                    geofs.animation.values.altitudeBug = AFCS_STATE.targetAltitude;
+                    geofs.animation.values.targetHeading = AFCS_STATE.targetHeadingAp;
+                    geofs.animation.values.targetCourse = AFCS_STATE.targetHeadingAp;
+                    geofs.animation.values.headingBug = AFCS_STATE.targetHeadingAp;
+                    geofs.animation.values.courseBug = AFCS_STATE.targetHeadingAp;
+                    geofs.animation.values.course = AFCS_STATE.targetHeadingAp;
+                }
+
+                // Synchronize DOM input fields if the Autopilot / NAV panel is open
+                let courseInputs = document.querySelectorAll(".geofs-autopilot-course, [data-method='setCourse']");
+                courseInputs.forEach(function(input) {
+                    input.value = Math.round(AFCS_STATE.targetHeadingAp);
+                });
+                let altInputs = document.querySelectorAll(".geofs-autopilot-altitude, [data-method='setAltitude']");
+                altInputs.forEach(function(input) {
+                    input.value = Math.round(AFCS_STATE.targetAltitude);
+                });
+
+                // Trigger instruments refresh if available
+                if (typeof instruments !== 'undefined' && typeof instruments.update === 'function') {
+                    instruments.update();
+                }
+                if (geofs.instruments && typeof geofs.instruments.update === 'function') {
+                    geofs.instruments.update();
+                }
+            }
+        } catch (e) {
+            // Silently ignore
+        }
     }
 
     function log(system, msg) {
@@ -264,22 +331,31 @@
             AFCS_STATE.targetAltitude = Math.round(currentAltFeet / 100) * 100;
             AFCS_STATE.targetHeadingAp = Math.round(vals.heading360 || 0);
 
-            // Seamless pitch initialization: initialize cruise target to current pitch attitude!
+            // Seamless pitch initialization: initialize cruise datum to current pitch attitude!
             let currentPitch = vals.atilt || 0;
-            AFCS_STATE.integratedPitchAp = clamp(currentPitch, AFCS_CONFIG.ap.pitchMin, AFCS_CONFIG.ap.pitchMax);
+            AFCS_STATE.cruisePitchDatum = clamp(currentPitch, AFCS_CONFIG.ap.pitchMin, AFCS_CONFIG.ap.pitchMax);
+            AFCS_STATE.integratedPitchAp = AFCS_STATE.cruisePitchDatum;
             AFCS_STATE.targetPitchAtrim = currentPitch;
+            AFCS_STATE.lastVS = vals.verticalSpeed || 0;
             AFCS_STATE.hdgIntegralAp = 0;
             AFCS_STATE.hdgLastErrorAp = 0;
 
             log("AP", `ENGAGED - ALT ${AFCS_STATE.targetAltitude}ft, HDG ${AFCS_STATE.targetHeadingAp}° (Collective controls airspeed)`);
             notify(`EC-135 AP: ON (${AFCS_STATE.targetAltitude}ft | ${AFCS_STATE.targetHeadingAp}°)`);
+            syncAPInstrumentBugs();
         } else {
             // Seamless AP Disengage Handover:
-            // A.TRIM is already executing smoothly at the current attitude and trim position!
+            // A.TRIM takes over from current pitch attitude with sanitized trim datum
             let currentPitch = vals.atilt || 0;
             AFCS_STATE.targetPitchAtrim = currentPitch;
             AFCS_STATE.wasPitchDeflected = false;
+            AFCS_STATE.pitchReleaseTime = 0;
             AFCS_STATE.wasApActive = true;
+
+            // Prevent handover of a fully saturated trim datum: clamp trimPitch to leave active headroom
+            AFCS_STATE.trimPitch = clamp(AFCS_STATE.trimPitch, -0.75, 0.75);
+            AFCS_STATE.lastBasePitch = AFCS_STATE.trimPitch;
+
             log("AP", "DISENGAGED - Smooth handover to Realistic Stack (A.TRIM + SAS).");
             notify("EC-135 AP: OFF");
         }
@@ -421,11 +497,23 @@
         // --- Ground / Skid Contact Safety ---
         // On the ground, zero out integrals and trim to prevent false build-up against friction
         if (vals.groundContact) {
+            // Cruise Autopilot must immediately disengage upon ground contact/landing
+            if (AFCS_STATE.apActive) {
+                setAutopilot(false);
+                notify("EC-135 AP: DISENGAGED (GROUND CONTACT)", 2500);
+            }
+
             AFCS_STATE.trimPitch = 0;
             AFCS_STATE.lastBasePitch = rawPitch;
             AFCS_STATE.targetPitchAtrim = currentPitch;
+            AFCS_STATE.integratedPitchAp = currentPitch;
+            AFCS_STATE.cruisePitchDatum = currentPitch;
+            AFCS_STATE.hdgIntegralAp = 0;
+            AFCS_STATE.hdgLastErrorAp = 0;
+            AFCS_STATE.lastVS = 0;
             AFCS_STATE.targetHeadingHover = null;
             AFCS_STATE.wasPitchDeflected = false;
+            AFCS_STATE.pitchReleaseTime = 0;
             AFCS_STATE.wasPedalDeflectedHover = false;
             vals.fbwPitch = rawPitch;
             vals.fbwRoll = rawRoll;
@@ -522,31 +610,71 @@
             let altError = AFCS_STATE.targetAltitude - currentAltFeet;
             let targetVS = clamp(altError * apCfg.alt_Kp, -apCfg.alt_vsMax, apCfg.alt_vsMax);
 
-            // Middle V/S Loop -> Target Pitch Attitude
+            // Middle V/S Loop -> Target Pitch Attitude with Integral Trim & Rate Damping
             let vsError = targetVS - currentVS;
+            let vsDerivative = 0;
+            if (AFCS_STATE.lastVS !== null && dt > 0) {
+                vsDerivative = (currentVS - AFCS_STATE.lastVS) / dt;
+            }
+            AFCS_STATE.lastVS = currentVS;
+
+            // Integral accumulates exact pitch attitude needed to match actual V/S target
             AFCS_STATE.integratedPitchAp -= (vsError * apCfg.vs_Ki) * dt;
             AFCS_STATE.integratedPitchAp = clamp(AFCS_STATE.integratedPitchAp, apCfg.pitchMin, apCfg.pitchMax);
 
-            let targetPitch = clamp(AFCS_STATE.integratedPitchAp - (vsError * apCfg.vs_Kp), apCfg.pitchMin, apCfg.pitchMax);
+            // Target attitude = Integrated trim - P correction + D rate damping (braking to prevent bouncing)
+            let desiredPitch = clamp(
+                AFCS_STATE.integratedPitchAp - (vsError * apCfg.vs_Kp) + (vsDerivative * apCfg.vs_Kd),
+                apCfg.pitchMin,
+                apCfg.pitchMax
+            );
 
-            // Directly guide A.TRIM hands-off pitch attitude director!
-            AFCS_STATE.targetPitchAtrim = targetPitch;
+            // Slew-rate limit the target pitch command (max 3.5 deg/sec) to eliminate sudden jerks
+            let maxPitchSlew = 3.5 * dt;
+            let currentTarget = AFCS_STATE.targetPitchAtrim !== null ? AFCS_STATE.targetPitchAtrim : desiredPitch;
+            let pitchDiff = desiredPitch - currentTarget;
+            AFCS_STATE.targetPitchAtrim = currentTarget + clamp(pitchDiff, -maxPitchSlew, maxPitchSlew);
 
-            // Wings-Level Roll Hold -> Cyclic Roll
-            let rollError = 0 - currentRoll;
+            // Airspeed-Scheduled Coordinated Turning
+            let ias = (typeof vals.kias === 'number' ? vals.kias : (vals.indicatedAirspeed || 0)) || 0;
+            let turnBlend = clamp((ias - apCfg.turnTransitionMinIas) / (apCfg.turnTransitionMaxIas - apCfg.turnTransitionMinIas), 0.0, 1.0);
+
+            // Heading error relative to target
+            let hdgError = wrapAngle(AFCS_STATE.targetHeadingAp - currentHeading);
+
+            // Target bank angle: Negative = right bank, Positive = left bank (authentic GeoFS aroll coordinates)
+            let targetBank = - clamp(hdgError * apCfg.bank_Kp, -apCfg.maxBankAngle, apCfg.maxBankAngle) * turnBlend;
+
+            // Cyclic Roll: Tracks target bank angle in coordinated turn, wings-level in hover/slow flight
+            let rollError = targetBank - currentRoll;
             let rollCmd = -((rollError * apCfg.roll_Kp) - (rollRateSec * 0.01667 * apCfg.roll_Kd));
             baseRoll = clamp(rollCmd, -apCfg.roll_outputMax, apCfg.roll_outputMax);
 
-            // Heading Hold PID -> Tail Rotor
-            let hdgError = wrapAngle(AFCS_STATE.targetHeadingAp - currentHeading);
+            // Tail Rotor: Fades from low-speed pedal steering to high-speed turn coordination
             AFCS_STATE.hdgIntegralAp += hdgError * dt;
             AFCS_STATE.hdgIntegralAp = clamp(AFCS_STATE.hdgIntegralAp, -apCfg.hdg_integralMax, apCfg.hdg_integralMax);
 
-            let hdgDerivative = (hdgError - AFCS_STATE.hdgLastErrorAp);
-            AFCS_STATE.hdgLastErrorAp = hdgError;
-
-            let hdgOutput = (apCfg.hdg_Kp * hdgError) + (apCfg.hdg_Ki * AFCS_STATE.hdgIntegralAp) + (apCfg.hdg_Kd * hdgDerivative);
+            // In cruise, cyclic roll carves the turn; tail rotor provides turn coordination and slip damping
+            let yawCoordFactor = 1.0 - (0.65 * turnBlend);
+            let yawDamping = -(yawRateSec * (apCfg.hdg_Kd * 0.02));
+            let hdgOutput = ((apCfg.hdg_Kp * hdgError) + (apCfg.hdg_Ki * AFCS_STATE.hdgIntegralAp)) * yawCoordFactor + yawDamping;
             baseYaw = clamp(hdgOutput, -apCfg.hdg_outputMax, apCfg.hdg_outputMax);
+
+            // Keep GeoFS AP values and animation values continuously synced for cockpit dials/bugs
+            if (typeof geofs !== 'undefined') {
+                if (geofs.autopilot && geofs.autopilot.values) {
+                    geofs.autopilot.values.course = AFCS_STATE.targetHeadingAp;
+                    geofs.autopilot.values.heading = AFCS_STATE.targetHeadingAp;
+                    geofs.autopilot.values.altitude = AFCS_STATE.targetAltitude;
+                }
+                if (geofs.animation && geofs.animation.values) {
+                    geofs.animation.values.targetHeading = AFCS_STATE.targetHeadingAp;
+                    geofs.animation.values.targetCourse = AFCS_STATE.targetHeadingAp;
+                    geofs.animation.values.headingBug = AFCS_STATE.targetHeadingAp;
+                    geofs.animation.values.courseBug = AFCS_STATE.targetHeadingAp;
+                    geofs.animation.values.course = AFCS_STATE.targetHeadingAp;
+                }
+            }
         }
 
         // --- 2B. A.TRIM LONGITUDINAL PITCH LOOP ---
@@ -556,6 +684,7 @@
 
             if (isPitchDeflected) {
                 AFCS_STATE.wasPitchDeflected = true;
+                AFCS_STATE.pitchReleaseTime = 0;
 
                 // Pilot actively steering cyclic: target tracks current attitude
                 AFCS_STATE.targetPitchAtrim = currentPitch;
@@ -569,13 +698,29 @@
                 AFCS_STATE.lastBasePitch = basePitch;
 
             } else {
-                // BUMPLESS HANDOVER ON STICK RELEASE:
-                // The instant cyclic centers into deadzone, lock commanded cyclic into trimPitch
-                // and capture current pitch attitude. Zero cyclic drop, zero flapback ballooning!
+                // BUMPLESS HANDOVER ON STICK RELEASE (Settle-then-latch):
+                // If stick was recently released from a manual maneuver, let the nose naturally coast and settle
+                // before latching the reference attitude. This eliminates rubber-banding / snapback.
                 if (AFCS_STATE.wasPitchDeflected) {
-                    AFCS_STATE.wasPitchDeflected = false;
-                    AFCS_STATE.targetPitchAtrim = currentPitch;
-                    AFCS_STATE.trimPitch = clamp(AFCS_STATE.lastBasePitch !== undefined ? AFCS_STATE.lastBasePitch : basePitch, -atrimCfg.maxPitchTrim, atrimCfg.maxPitchTrim);
+                    if (!AFCS_STATE.apActive) {
+                        if (AFCS_STATE.pitchReleaseTime === 0) {
+                            AFCS_STATE.pitchReleaseTime = performance.now();
+                            AFCS_STATE.trimPitch = clamp(AFCS_STATE.lastBasePitch !== undefined ? AFCS_STATE.lastBasePitch : basePitch, -atrimCfg.maxPitchTrim, atrimCfg.maxPitchTrim);
+                        }
+                        let elapsedSettle = (performance.now() - AFCS_STATE.pitchReleaseTime) / 1000;
+
+                        // Target tracks current attitude continuously while residual pitch rate subsides
+                        AFCS_STATE.targetPitchAtrim = currentPitch;
+
+                        // Once rotation halts (< 1.5 deg/sec) or settle window expires (0.6s), latch final attitude
+                        if (Math.abs(pitchRateSec) < 1.5 || elapsedSettle > 0.6) {
+                            AFCS_STATE.wasPitchDeflected = false;
+                            AFCS_STATE.pitchReleaseTime = 0;
+                        }
+                    } else {
+                        AFCS_STATE.wasPitchDeflected = false;
+                        AFCS_STATE.pitchReleaseTime = 0;
+                    }
                 }
 
                 if (AFCS_STATE.targetPitchAtrim === null) AFCS_STATE.targetPitchAtrim = currentPitch;
@@ -738,6 +883,46 @@
                 event.stopImmediatePropagation();
                 setAutopilot(!AFCS_STATE.apActive);
                 return;
+            }
+
+            // Arrow Keys -> Autopilot Beep Trim (Altitude & Heading Adjustments)
+            if (AFCS_STATE.apActive && (event.key === "ArrowUp" || event.key === "ArrowDown" || event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+                event.preventDefault();
+                event.stopImmediatePropagation();
+
+                // Altitude Adjustments (Up / Down)
+                // Normal: +/- 100 ft | Shift: +/- 500 ft (fast climb/descent rate)
+                if (event.key === "ArrowUp") {
+                    let step = event.shiftKey ? 500 : 100;
+                    AFCS_STATE.targetAltitude += step;
+                    syncAPInstrumentBugs();
+                    notify(`EC-135 AP: ALT ${AFCS_STATE.targetAltitude}ft (+${step})`, 1500);
+                    return;
+                }
+                if (event.key === "ArrowDown") {
+                    let step = event.shiftKey ? 500 : 100;
+                    AFCS_STATE.targetAltitude = Math.max(0, AFCS_STATE.targetAltitude - step);
+                    syncAPInstrumentBugs();
+                    notify(`EC-135 AP: ALT ${AFCS_STATE.targetAltitude}ft (-${step})`, 1500);
+                    return;
+                }
+
+                // Heading Adjustments (Left / Right)
+                // Normal: +/- 1 deg | Shift: +/- 5 deg (faster course turn)
+                if (event.key === "ArrowLeft") {
+                    let step = event.shiftKey ? 5 : 1;
+                    AFCS_STATE.targetHeadingAp = (AFCS_STATE.targetHeadingAp - step + 360) % 360;
+                    syncAPInstrumentBugs();
+                    notify(`EC-135 AP: HDG ${AFCS_STATE.targetHeadingAp}° (-${step}°)`, 1500);
+                    return;
+                }
+                if (event.key === "ArrowRight") {
+                    let step = event.shiftKey ? 5 : 1;
+                    AFCS_STATE.targetHeadingAp = (AFCS_STATE.targetHeadingAp + step) % 360;
+                    syncAPInstrumentBugs();
+                    notify(`EC-135 AP: HDG ${AFCS_STATE.targetHeadingAp}° (+${step}°)`, 1500);
+                    return;
+                }
             }
         }, true);
 
