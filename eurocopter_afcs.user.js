@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GeoFS Eurocopter EC-135 AFCS Suite
 // @namespace    https://github.com/cyberterm/GeoFS-EC135-AFCS
-// @version      1.1.0
+// @version      1.1.1
 // @description  Complete Automatic Flight Control System (AFCS) for the GeoFS Eurocopter EC-135. Features Stability Augmentation (SAS), Pitch Auto-Trim (A.TRIM), Auto-Hover, and Cruise Autopilot in a single unified, frame-rate independent flight loop with bumpless state transitions.
 // @author       cyberterm
 // @match        *://*.geo-fs.com/*
@@ -141,6 +141,9 @@
         lastVS: null,                     // Previous vertical speed for rate damping (braking)
         hdgIntegralAp: 0,
         hdgLastErrorAp: 0,
+        apEngagePitch: 0,                 // Baseline control input at engagement for manual override
+        apEngageRoll: 0,
+        apEngageYaw: 0,
 
         // Previous sensor history for delta-t rate computations
         lastHeading: 0,
@@ -339,6 +342,11 @@
             AFCS_STATE.lastVS = vals.verticalSpeed || 0;
             AFCS_STATE.hdgIntegralAp = 0;
             AFCS_STATE.hdgLastErrorAp = 0;
+
+            // Record baseline control positions to detect manual override (Fly-Through Disconnect)
+            AFCS_STATE.apEngagePitch = AFCS_STATE.rawPitch || 0;
+            AFCS_STATE.apEngageRoll = AFCS_STATE.rawRoll || 0;
+            AFCS_STATE.apEngageYaw = AFCS_STATE.rawYaw || 0;
 
             log("AP", `ENGAGED - ALT ${AFCS_STATE.targetAltitude}ft, HDG ${AFCS_STATE.targetHeadingAp}° (Collective controls airspeed)`);
             notify(`EC-135 AP: ON (${AFCS_STATE.targetAltitude}ft | ${AFCS_STATE.targetHeadingAp}°)`);
@@ -604,6 +612,21 @@
         // --- 2A. CRUISE AUTOPILOT UPPER MODE DIRECTOR ---
         // When AP is active, it guides A.TRIM's target pitch attitude, holds wings level, and locks heading
         if (AFCS_STATE.apActive) {
+            // Manual Pilot Control Override (Fly-Through Disconnect):
+            // If the pilot moves pitch, roll, or pedals deliberately beyond engagement baseline,
+            // immediately disconnect Autopilot and hand full manual control back.
+            let dPitch = Math.abs(rawPitch - AFCS_STATE.apEngagePitch);
+            let dRoll = Math.abs(rawRoll - AFCS_STATE.apEngageRoll);
+            let dYaw = Math.abs(rawYaw - AFCS_STATE.apEngageYaw);
+
+            if (dPitch > 0.15 || dRoll > 0.15 || dYaw > 0.20) {
+                setAutopilot(false);
+                notify("EC-135 AP: DISENGAGED (MANUAL OVERRIDE)", 2000);
+                log("AP", "Disengaged by pilot manual control override.");
+            }
+        }
+
+        if (AFCS_STATE.apActive) {
             const apCfg = AFCS_CONFIG.ap;
 
             // Outer Altitude Loop -> Target Vertical Speed
@@ -680,7 +703,8 @@
         // --- 2B. A.TRIM LONGITUDINAL PITCH LOOP ---
         if (AFCS_STATE.atrimActive) {
             const atrimCfg = AFCS_CONFIG.atrim;
-            let isPitchDeflected = Math.abs(rawPitch) > atrimCfg.stickDeadzone;
+            // When AP is active, manual stick displacement must not hijack pitch director unless manual override triggers
+            let isPitchDeflected = !AFCS_STATE.apActive && (Math.abs(rawPitch) > atrimCfg.stickDeadzone);
 
             if (isPitchDeflected) {
                 AFCS_STATE.wasPitchDeflected = true;
@@ -930,7 +954,7 @@
         document.addEventListener("click", function(event) {
             if (!isEC135) return;
             let target = event.target;
-            if (target && target.closest && target.closest(".geofs-autopilot-toggle")) {
+            if (target && target.closest && target.closest(".geofs-autopilot-toggle, [data-method='autopilotToggle'], [data-toggle='autopilot']")) {
                 event.stopImmediatePropagation();
                 event.preventDefault();
                 setAutopilot(!AFCS_STATE.apActive);
@@ -955,8 +979,27 @@
 
             if (isEC135) {
                 hookAFCSParts();
-                if (typeof geofs !== 'undefined' && geofs.autopilot && geofs.autopilot.isActive) {
-                    geofs.autopilot.turnOff();
+                if (typeof geofs !== 'undefined' && geofs.autopilot) {
+                    if (geofs.autopilot.isActive) geofs.autopilot.turnOff();
+
+                    // Intercept any native GeoFS autopilot triggers so they route cleanly to AFCS
+                    let origTurnOn = geofs.autopilot.turnOn;
+                    geofs.autopilot.turnOn = function() {
+                        if (isEC135) {
+                            setAutopilot(true);
+                            return;
+                        }
+                        if (typeof origTurnOn === 'function') origTurnOn.apply(this, arguments);
+                    };
+
+                    let origTurnOff = geofs.autopilot.turnOff;
+                    geofs.autopilot.turnOff = function() {
+                        if (isEC135) {
+                            setAutopilot(false);
+                            return;
+                        }
+                        if (typeof origTurnOff === 'function') origTurnOff.apply(this, arguments);
+                    };
                 }
                 console.log("%c[EC-135 AFCS Suite] Engaged & Active! Ready for flight.", "color: #00ffcc; font-weight: bold;");
                 console.log("[EC-135 AFCS] Controls: 'Z' = A.TRIM | 'CapsLock' = SAS | 'G' = Hover Assist | 'A' = Cruise Autopilot");
