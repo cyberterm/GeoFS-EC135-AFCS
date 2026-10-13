@@ -33,18 +33,20 @@ Designed to eliminate twitchy stock handling, remove the exhausting need for con
 You do not need to press any keys to enjoy realistic, stable flight. The core stability and pitch-trim systems **arm automatically on spawn** and work seamlessly in the background.
 
 #### Primary Flight Modes
-| Key | Mode | Status | When to Use |
+| Key / UI Button | Mode | Status | When to Use |
 | :---: | :--- | :---: | :--- |
 | *(None)* | **Realistic Flight (SAS + A.TRIM)** | **Default** | **Normal flying:** Take off, push forward to cruise speed, and release the stick. The helicopter flies stable and trimmed hands-off. |
-| <kbd>A</kbd> | **Cruise Autopilot** | Optional | **Long cross-country flights:** Locks barometric altitude and heading. Adjust your airspeed using the collective. |
-| <kbd>G</kbd> | **Hover Assist** | Optional | **Helipad landings & hovering:** Hands-off self-leveling to 0° wings-level hover with automatic heading lock. |
+| <kbd>A</kbd> / `AUTOPILOT` | **Cruise Autopilot (`HDG` / `NAV`)** | Optional | **Long cross-country flights:** Locks barometric altitude, vertical speed, and heading or GPS/radio navigation route. Adjust airspeed using the collective. |
+| <kbd>G</kbd> / `HOVER` | **Hover Assist** | Optional | **Helipad landings & hovering:** Hands-off self-leveling to $0^\circ$ wings-level hover with automatic heading lock. |
 
-#### Autopilot In-Flight Adjustments (Beep Trim)
-While **Cruise Autopilot (<kbd>A</kbd>)** is engaged, use the arrow keys to adjust targets without disengaging:
-| Key | Adjustment | Fast Step (<kbd>Shift</kbd> + Key) | Cockpit Feedback |
+#### Autopilot Panel & In-Flight Adjustments (Beep Trim)
+When **Cruise Autopilot (<kbd>A</kbd>)** is engaged, the native GeoFS autopilot drawer unfolds with full two-way synchronization (`HDG`/`NAV`, `ALT`, and `VERT SPEED`), and you can also use the arrow keys for hands-on Beep Trim:
+| Key / Control | Adjustment | Fast Step (<kbd>Shift</kbd> + Key) | Cockpit & UI Feedback |
 | :---: | :--- | :--- | :--- |
-| <kbd>▲ Up</kbd> / <kbd>▼ Down</kbd> | Altitude $\pm 100\text{ ft}$ | $\pm 500\text{ ft}$ fast climb/descent | Live PFD/altimeter tape sync |
-| <kbd>◄ Left</kbd> / <kbd>► Right</kbd> | Heading $\pm 1^\circ$ | $\pm 5^\circ$ course turn | Live HSI heading bug sync |
+| <kbd>▲ Up</kbd> / <kbd>▼ Down</kbd> | Altitude $\pm 100\text{ ft}$ | $\pm 500\text{ ft}$ fast climb/descent | Syncs `ALT` box, PFD bug & auto-assigns $\pm 700\text{ fpm}$ `VERT SPEED` |
+| <kbd>◄ Left</kbd> / <kbd>► Right</kbd> | Heading $\pm 1^\circ$ | $\pm 5^\circ$ course turn | Syncs `HDG` box & HSI bug (reverts `NAV` $\to$ `HDG`) |
+| `HDG` / `NAV` Switch | Lateral Mode Toggle | — | Switches between Heading Hold and GPS / Radio Navigation |
+| `VERT SPEED` Input | Custom Climb/Descent Rate | — | Command any climb/descent rate ($\text{ft/min}$); auto-zeros on altitude capture |
 
 #### Advanced System Diagnostics (Optional)
 These keys are only needed if you want to disarm individual systems to test raw helicopter physics:
@@ -63,18 +65,21 @@ These keys are only needed if you want to disarm individual systems to test raw 
 * **Hands-Off Cruise:** Release the cyclic. **A.TRIM** smoothly captures and holds that nose-down attitude hands-off. You can fly long distances at high speed without touching the pitch axis or holding continuous forward pressure.
 * **Maneuvering:** Pushing or pulling the stick moves the cyclic smoothly. With our **Settle-Then-Latch** logic, releasing after aggressive pitch maneuvers lets the nose coast naturally to a halt and lock into its new resting attitude — **zero rubber-banding or snapback**.
 
-### 2. Precision Hovering & Landings (<kbd>G</kbd>)
-* **Entering Hover:** As you approach a helipad, press <kbd>G</kbd>. A.TRIM yields and **Hover Assist** takes over.
+### 2. Precision Hovering & Landings (<kbd>G</kbd> or `HOVER` Pad)
+* **Entering Hover:** As you approach a helipad, press <kbd>G</kbd> or click the **HOVER** button next to `AUTOPILOT` on the bottom bar. A.TRIM yields and **Hover Assist** takes over.
 * **Self-Leveling Cyclic:** Stick inputs command exact pitch and roll angles rather than angular rates. Centering the stick automatically brings the helicopter to a $0^\circ$ flat, wings-level hover.
 * **Spot Turns & Heading Lock:** Deflecting the pedals rotates the tail cleanly on the spot. Releasing the pedals actively halts rotation and locks onto your current heading.
-* **Departing:** Press <kbd>G</kbd> to disengage Hover Assist. The realistic stack seamlessly takes back over.
+* **Departing:** Press <kbd>G</kbd> (or click **HOVER**) to disengage Hover Assist. The realistic stack seamlessly takes back over.
 
-### 3. Long-Distance Cruise Autopilot (<kbd>A</kbd>)
-* **Engaging:** At cruising altitude, press <kbd>A</kbd> (or click the cockpit autopilot button).
-* **Altitude & Heading Hold:** The autopilot captures your current barometric altitude (rounded to the nearest 100 ft) and heading.
-* **Beep Trim Adjustments:** Tap arrow keys to fine-tune altitude and heading live on your cockpit tapes.
-* **Coordinated Banking:** In cruise, turns roll in up to $18^\circ$ of bank with cyclic roll rather than dragging the fuselage flat with tail rotor yaw.
-* **Disengaging:** Press <kbd>A</kbd> again. The system performs a sanitized, bumpless handover back to manual flight with ample active control headroom.
+### 3. Long-Distance Cruise Autopilot (<kbd>A</kbd> or `AUTOPILOT` Pad)
+* **Engaging:** At cruising altitude, press <kbd>A</kbd> or click the **AUTOPILOT** button. The native fixed-wing airspeed (`KTS`) box is automatically hidden because helicopter airspeed is governed by the collective lever.
+* **Altitude & Vertical Speed (`VERT SPEED`):** Captures your current barometric altitude (rounded to the nearest $100\text{ ft}$). Dialing in a new target altitude (via UI or arrow keys) automatically schedules a $\pm 700\text{ fpm}$ climb/descent rate, or you can enter any custom vertical speed in the `VERT SPEED` box. As you approach within $100\text{ ft}$ of your target altitude, the autopilot smoothly flares into Altitude Hold and resets `VERT SPEED` to `0`.
+* **Navigation (`NAV`) Mode & `OBS` Course Intercept:**
+  * Click **NAV** to track your active GeoFS Flight Plan route (`FPL`) or tuned radio navaid (`VOR` / `ILS` / GPS fix).
+  * **Waypoint Altitude Capture:** If a flight plan waypoint has a designated altitude, `NAV` mode automatically updates your target altitude upon engaging and as you sequence through each leg.
+  * **`TRK` (Direct-To) vs. Manual `OBS`:** By default, GPS waypoints use `TRK` (Direct-To bearing) and automatically reset `OBS` to `TRK` whenever a new waypoint is selected or sequenced. In strong crosswinds, you can dial a specific `OBS` radial on the cockpit HSI/NAV unit to fly a crabbed, zero-drift course line with up to a $45^\circ$ intercept angle.
+* **Coordinated Banking:** In cruise, turns roll in up to $20^\circ$ of bank with cyclic roll rather than dragging the fuselage flat with tail rotor yaw.
+* **Disengaging & Fly-Through Override:** Press <kbd>A</kbd>, click **AUTOPILOT**, or simply deflect the cyclic/pedals past the manual override threshold to disconnect the autopilot with a bumpless handover back to manual flight.
 * **Touchdown Safety:** If you land with AP active, the system automatically disengages on ground contact and flushes all integrators to ensure a clean, stable subsequent takeoff.
 
 ---
@@ -99,14 +104,15 @@ A specialized low-speed control augmentation mode:
 * **Proportional-Derivative Attitude Hold:** Maps cyclic deflection directly to target bank and pitch angles ($\pm 20^\circ$).
 * **Two-Phase Heading Lock:** When pedals are released from a turn, the system applies dynamic gyro braking to bring rotation below $1.5^\circ/\text{sec}$, then captures and holds the settled heading with a critically damped PD loop.
 
-### 4. Cruise Autopilot (AP)
-A cascaded 3-loop flight director and autopilot:
-* **Outer Altitude Loop:** Converts altitude error to target vertical speed ($\pm 750\text{ ft/min}$).
-* **Middle V/S Loop:** PID director with vertical acceleration damping (`vs_Kd`) and realistic pitch limits ($-10^\circ$ climb to $+12^\circ$ cruise dip) that trims the exact attitude needed to match target V/S without integrator windup.
+### 4. Cruise Autopilot (AP) & Navigation Director
+A standalone, cascaded 3-loop helicopter flight director that completely bypasses GeoFS's fixed-wing autopilot engine (`geofs.autopilot.on` remains permanently `false` so GeoFS never hijacks pilot controls):
+* **Outer Altitude & Commanded V/S Loop:** Tracks pilot-commanded `VERT SPEED` with proportional flare capture (`alt_Kp = 3.0`) into target altitude, or holds altitude within $\pm 750\text{ ft/min}$ when `VERT SPEED` is `0`.
+* **Two-Stage V/S Low-Pass Filter & Deviation-Scaled PID:** Filters vertical speed and vertical acceleration (`vs_Kd`) so short wind gusts are absorbed naturally by SAS and A.TRIM while large V/S deviations (such as rapid collective changes) receive full proportional and derivative braking authority within realistic pitch limits ($-10^\circ$ climb to $+12^\circ$ cruise dip).
 * **Slew-Rate Limiter:** Limits flight director pitch commands to $3.5^\circ/\text{sec}$, simulating real electric trim jacks and eliminating sudden cyclic jerks.
-* **Speed-Scheduled Coordinated Turning:** Airspeed-scheduled turn director that rolls up to $18^\circ$ of bank with cyclic roll above $60\text{ kts}$ while fading pedal yaw to pure turn coordination.
-* **Derivative Kick Elimination:** Uses physical gyro yaw rate damping on measurement (`yawRateSec`), guaranteeing zero tail rotor twitching when stepping through heading targets.
-* **Ground Decoupling:** Auto-disengages on touchdown and flushes all integrators to prevent ground resonance or post-touchdown ballooning.
+* **Lateral `HDG` & `NAV` Director:** Computes great-circle bearings (`TRK`) or `OBS` radial intercept headings ($\text{OBS} + \text{clamp}(10 \times \Delta\text{course}, -45^\circ, +45^\circ)$) across Flight Plan waypoints and tuned radio navaids.
+* **Speed-Scheduled Coordinated Turning:** Airspeed-scheduled turn director that rolls up to $20^\circ$ of bank with cyclic roll above $60\text{ kts}$ while fading pedal yaw to pure turn coordination.
+* **Barometric Cockpit Altimeter Fix:** Intercepts `flight.setAnimationValues` to drive the 3D cockpit altimeter drums with true barometric altitude instead of radar altitude (`altitudeAboveGround`).
+* **Ground Decoupling & Fly-Through Disconnect:** Auto-disengages on touchdown or manual control deflection and flushes all integrators to prevent ground resonance or post-touchdown ballooning.
 
 ---
 
@@ -128,9 +134,9 @@ A cascaded 3-loop flight director and autopilot:
 - [x] **Improved A.TRIM Handling:** Settle-then-latch attitude capture (zero rubber-banding on release), expanded parallel trim headroom (0.85), and sanitized AP handover. PID finetuning.
 
 ### v1.2
-- [ ] **NAV Mode:** Waypoint and flight plan route tracking.
-- [ ] **Vertical Speed Selection (V.VEL):** Dial in specific climb or descent rates (e.g., -500 ft/min approach).
-- [ ] **GeoFS AP Panel Integration:** Proper two-way integration with the native GeoFS autopilot control window.
+- [x] **NAV Mode:** Flight plan (`FPL`) and radio navaid (`VOR`/`ILS`/GPS) route tracking with automatic waypoint altitude capture, `TRK` Direct-To mode (with automatic `OBS` reset on waypoint changes), and manual `OBS` radial intercept support for crosswind drift correction.
+- [x] **Vertical Speed Selection (V.VEL):** Full two-way `VERT SPEED` integration in the autopilot bar with automatic $\pm 700\text{ fpm}$ climb/descent scheduling on altitude changes and smooth flare-to-capture.
+- [x] **GeoFS AP Panel Integration:** Complete standalone integration with the native GeoFS autopilot bar (`AUTOPILOT`, custom `HOVER` pad, `HDG`/`NAV`, `ALT`, `VERT SPEED`), fly-through manual override disconnect, and 3D cockpit barometric altimeter drum synchronization.
 
 ### v2.0
 - [ ] **4-Axis Autopilot Integration:** Full 4th-axis collective actuator automation with altitude hover and airspeed selection loop.

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GeoFS Eurocopter EC-135 AFCS Suite
 // @namespace    https://github.com/cyberterm/GeoFS-EC135-AFCS
-// @version      1.1.1
+// @version      1.2.0
 // @description  Complete Automatic Flight Control System (AFCS) for the GeoFS Eurocopter EC-135. Features Stability Augmentation (SAS), Pitch Auto-Trim (A.TRIM), Auto-Hover, and Cruise Autopilot in a single unified, frame-rate independent flight loop with bumpless state transitions.
 // @author       cyberterm
 // @match        *://*.geo-fs.com/*
@@ -46,7 +46,7 @@
             trimMigrationRate: 0.15,      // Migration rate per second of held stick deflection
             pitch_Kp: 0.02,              // Base retention proportional gain (cyclic / deg)
             pitch_Ki: 0.02,              // Base retention integral trim gain against flapback
-            pitch_Kd: 0.01,              // Retention pitch rate damping
+            pitch_Kd: 0.02,              // Retention pitch rate damping
             maxPitchTrim: 0.85            // Maximum parallel trim authority (expanded headroom for high-speed cruise)
         },
 
@@ -69,12 +69,12 @@
         // --- Cruise Autopilot (Altitude & Heading Hold) ---
         // Altitude mode acts as an upper director commanding A.TRIM target pitch attitude
         ap: {
-            alt_Kp: 4.0,                  // Target V/S per foot of altitude error (smooth, cushioned flare)
+            alt_Kp: 3.0,                  // Target V/S per foot of altitude error (smooth, cushioned flare)
             alt_vsMax: 750,               // Max target vertical speed (ft/min)
 
-            vs_Kp: 0.02,                 // Pitch attitude adjustment per ft/min of V/S error
+            vs_Kp: 0.005,                 // Pitch attitude adjustment per ft/min of V/S error
             vs_Ki: 0.004,                // Integral trim rate matching pitch attitude to V/S
-            vs_Kd: 0.03,                 // Derivative rate damping (braking) on vertical acceleration
+            vs_Kd: 0.02,                 // Derivative rate damping (braking) on vertical acceleration
             pitchMin: -10,                // Max climb angle (deg) - realistic cruise envelope
             pitchMax: 12,                 // Max cruise nose-down angle (deg) - prevents phantom dive & trim windup
 
@@ -83,8 +83,8 @@
             roll_Kd: 0.40,                // Roll rate damping
             roll_outputMax: 0.35,         // Max cyclic roll command
             bank_Kp: 0.90,                // Target bank angle per degree of heading error (deg bank / deg error)
-            maxBankAngle: 18,             // Maximum bank angle in coordinated turn (deg)
-            turnTransitionMinIas: 45,     // Airspeed where roll banking starts (kts)
+            maxBankAngle: 20,             // Maximum bank angle in coordinated turn (deg)
+            turnTransitionMinIas: 40,     // Airspeed where roll banking starts (kts)
             turnTransitionMaxIas: 60,     // Airspeed where turn is 100% coordinated roll (kts)
 
             hdg_Kp: 0.02,                 // Heading hold PID gains
@@ -135,16 +135,20 @@
 
         // Autopilot state
         targetAltitude: 0,
-        lastTargetAltitude: null,         // Previous target altitude for detecting altitude changes
         targetHeadingAp: 0,
         targetVS: 0,                      // Target vertical speed (ft/min)
-        lastUIVS: 0,                      // Last known V/S in the UI to detect user adjustments
         integratedPitchAp: 0,             // Pitch attitude matching commanded V/S
         lastVS: null,                     // Previous vertical speed for rate damping (braking)
+        filteredVS: null,                 // Low-pass filtered vertical speed (ignores short wind gusts)
+        filteredVSDeriv: 0,               // Low-pass filtered vertical acceleration (ft/min/sec)
         hdgIntegralAp: 0,
         apEngagePitch: 0,                 // Baseline control input at engagement for manual override
         apEngageRoll: 0,
         apEngageYaw: 0,
+        apEngageTime: 0,                  // Engagement timestamp for smooth initial settle window
+        navActive: false,                 // Active waypoint / NAV aid navigation tracking mode
+        lastNavWptId: null,               // Last tracked waypoint ID for leg transition detection
+        lastNavWptAlt: null,              // Last tracked waypoint altitude for change detection
 
         // Previous sensor history for delta-t rate computations
         lastHeading: 0,
@@ -152,11 +156,7 @@
         lastRoll: 0,
         lastThrottle: 0,
         filteredCollRate: 0,              // Low-pass filtered collective rate for smooth torque compensation
-        lastTime: performance.now(),
-
-        // Transition flags
-        wasApActive: false,
-        wasHoverActive: false
+        lastTime: performance.now()
     };
 
     // Expose for live console inspection and debugging
@@ -175,6 +175,164 @@
         while (delta > 180) delta -= 360;
         while (delta < -180) delta += 360;
         return delta;
+    }
+
+    function resetOBSToTrack() {
+        try {
+            if (typeof geofs !== 'undefined' && geofs.nav) {
+                if (geofs.nav.units && geofs.nav.units.GPS) {
+                    geofs.nav.units.GPS.OBS = "TRK";
+                }
+                if (geofs.nav.currentNAVUnit && geofs.nav.currentNAVUnit.navaid && geofs.nav.currentNAVUnit.navaid.GPS) {
+                    geofs.nav.currentNAVUnit.OBS = "TRK";
+                }
+                if (typeof geofs.nav.setOBS === 'function') {
+                    geofs.nav.setOBS("GPS", "TRK", null, true);
+                } else if (geofs.radio && typeof geofs.radio.displayOBS === 'function') {
+                    geofs.radio.displayOBS("TRK");
+                }
+            }
+        } catch (e) {
+            // Silently ignore
+        }
+    }
+
+    function getActiveNavTarget() {
+        if (typeof geofs === 'undefined') return null;
+
+        // 1. Direct Flight Plan Tracked Waypoint
+        if (geofs.flightPlan) {
+            let wpt = geofs.flightPlan.trackedWaypoint;
+            if (!wpt && Array.isArray(geofs.flightPlan.waypointArray) && geofs.flightPlan.waypointArray.length > 0) {
+                wpt = geofs.flightPlan.waypointArray.find(w => w && w.selected) || geofs.flightPlan.waypointArray[0];
+            }
+            if (wpt && geofs.aircraft && geofs.aircraft.instance && geofs.aircraft.instance.llaLocation) {
+                let wptLat = (wpt.lat !== undefined) ? Number(wpt.lat) : NaN;
+                let wptLon = (wpt.lon !== undefined) ? Number(wpt.lon) : NaN;
+                if (!isNaN(wptLat) && !isNaN(wptLon)) {
+                    let craftLoc = [geofs.aircraft.instance.llaLocation[0], geofs.aircraft.instance.llaLocation[1]];
+                    let wptLoc = [wptLat, wptLon];
+                    let directBearing = (geofs.utils.bearingBetweenLocations(craftLoc, wptLoc) + 360) % 360;
+                    let distM = geofs.utils.distanceBetweenLocations(craftLoc, wptLoc);
+
+                    // Check if pilot specified a manual OBS radial instead of default "TRK" (Direct-To)
+                    let gpsUnit = (geofs.nav && geofs.nav.units && geofs.nav.units.GPS)
+                        ? geofs.nav.units.GPS
+                        : (geofs.nav ? geofs.nav.currentNAVUnit : null);
+                    let targetBearing = directBearing;
+                    if (gpsUnit && gpsUnit.OBS !== "TRK" && gpsUnit.OBS !== null && gpsUnit.OBS !== undefined && gpsUnit.OBS !== "" && !isNaN(Number(gpsUnit.OBS))) {
+                        let obsCourse = (Number(gpsUnit.OBS) + 360) % 360;
+                        let courseDev = wrapAngle(directBearing - obsCourse);
+                        if (Math.abs(courseDev) > 90) {
+                            courseDev = -wrapAngle(courseDev - 180);
+                        }
+                        let interceptCorrection = clamp(10 * courseDev, -45, 45);
+                        targetBearing = (obsCourse + interceptCorrection + 360) % 360;
+                    }
+
+                    let parsedAlt = null;
+                    if (wpt.alt !== "" && wpt.alt !== null && wpt.alt !== undefined) {
+                        if (typeof geofs.utils !== 'undefined' && typeof geofs.utils.parseAltitude === 'function') {
+                            parsedAlt = geofs.utils.parseAltitude(wpt.alt);
+                        } else if (!isNaN(Number(wpt.alt))) {
+                            parsedAlt = Math.round(Number(wpt.alt));
+                        }
+                    }
+                    return {
+                        id: (typeof wpt.id === 'number') ? "FPL_" + wpt.id : ("FPL_" + (wpt.ident || 0)),
+                        name: wpt.ident || wpt.name || "WPT",
+                        bearing: targetBearing,
+                        distanceNM: distM * 0.000539957,
+                        alt: (typeof parsedAlt === 'number' && !isNaN(parsedAlt)) ? parsedAlt : null,
+                        isGPS: true,
+                        type: "FPL"
+                    };
+                }
+            }
+        }
+
+        // 2. Active Tuned Radio / NAV Aid (VOR / ILS / Standalone Fix)
+        if (geofs.nav && geofs.nav.currentNAVUnit && geofs.nav.currentNAVUnit.inRange) {
+            let unit = geofs.nav.currentNAVUnit;
+            let directBearing = (typeof unit.bearing === 'number') ? (unit.bearing + 360) % 360 : 0;
+            let interceptHdg = directBearing;
+
+            if (unit.OBS !== "TRK") {
+                let dev = (typeof unit.courseDeviation === 'number') ? clamp(10 * unit.courseDeviation, -45, 45) : 0;
+                let crs = (typeof unit.course === 'number') ? unit.course : directBearing;
+                interceptHdg = (crs + dev + 360) % 360;
+            }
+
+            return {
+                id: (unit.navaid && unit.navaid.id !== undefined) ? "NAV_" + unit.navaid.id : "NAV_UNIT",
+                name: (unit.navaid && (unit.navaid.ident || unit.navaid.name)) || geofs.nav.currentNAVUnitName || "NAV",
+                bearing: interceptHdg,
+                distanceNM: (unit.distance || 0) * 0.000539957,
+                alt: null,
+                isGPS: Boolean(unit.navaid && unit.navaid.GPS),
+                type: "NAV"
+            };
+        }
+
+        return null;
+    }
+
+    function updateNavButtonUI() {
+        if (!isEC135) return;
+        let hdgBtn = document.querySelector(".geofs-autopilot-HDG");
+        let navBtn = document.querySelector(".geofs-autopilot-NAV");
+        if (!hdgBtn || !navBtn) return;
+
+        if (AFCS_STATE.apActive && AFCS_STATE.navActive) {
+            navBtn.classList.remove("transp-pad");
+            navBtn.classList.add("green-pad");
+            hdgBtn.classList.remove("green-pad");
+            hdgBtn.classList.add("transp-pad");
+        } else {
+            hdgBtn.classList.remove("transp-pad");
+            hdgBtn.classList.add("green-pad");
+            navBtn.classList.remove("green-pad");
+            navBtn.classList.add("transp-pad");
+        }
+    }
+
+    function setNavMode(enable) {
+        if (enable) {
+            let target = getActiveNavTarget();
+            if (!target) {
+                notify("EC-135 AP: No active waypoint", 2000);
+                log("NAV", "Ignored - no active waypoint in flight plan or NAV radio.");
+                AFCS_STATE.navActive = false;
+                updateNavButtonUI();
+                return;
+            }
+            if (!AFCS_STATE.apActive) {
+                setAutopilot(true);
+            }
+            AFCS_STATE.navActive = true;
+            AFCS_STATE.lastNavWptId = target.id;
+            AFCS_STATE.lastNavWptAlt = target.alt;
+            AFCS_STATE.targetHeadingAp = Math.round(target.bearing);
+            if (typeof geofs !== 'undefined' && geofs.autopilot && geofs.autopilot.values) {
+                geofs.autopilot.values.course = AFCS_STATE.targetHeadingAp;
+            }
+
+            if (target.alt !== null && typeof geofs !== 'undefined' && geofs.autopilot && typeof geofs.autopilot.setAltitude === 'function') {
+                geofs.autopilot.setAltitude(target.alt, true);
+                notify(`EC-135 AP: NAV Active (${target.name} | ${target.alt}ft)`, 2500);
+            } else {
+                syncAPInstrumentBugs();
+                notify(`EC-135 AP: NAV Active (${target.name})`, 2500);
+            }
+            log("NAV", `Engaged on ${target.name} [${target.type}] - Bearing ${AFCS_STATE.targetHeadingAp}°${target.alt !== null ? ', Alt ' + target.alt + 'ft' : ''}`);
+        } else {
+            AFCS_STATE.navActive = false;
+            AFCS_STATE.lastNavWptId = null;
+            AFCS_STATE.lastNavWptAlt = null;
+            notify(`EC-135 AP: HDG Mode (${Math.round(AFCS_STATE.targetHeadingAp)}°)`, 2000);
+            log("NAV", `Returned to HDG mode (${Math.round(AFCS_STATE.targetHeadingAp)}°).`);
+        }
+        updateNavButtonUI();
     }
 
     function getCockpitAltitudeFeet(vals) {
@@ -232,6 +390,8 @@
         if (controls && isEC135) {
             controls.style.display = active ? "block" : "none";
         }
+
+        updateNavButtonUI();
     }
 
     function updateHoverButtonState(active) {
@@ -251,35 +411,9 @@
         }
     }
 
-    function ensureAutopilotDefinition() {
-        if (typeof geofs === 'undefined') return;
-        if (geofs.aircraft && geofs.aircraft.instance) {
-            if (!geofs.aircraft.instance.definition) geofs.aircraft.instance.definition = {};
-            if (!geofs.aircraft.instance.definition.autopilot) geofs.aircraft.instance.definition.autopilot = {};
-            geofs.aircraft.instance.definition.autopilot.maxClimbrate = 6000;
-            geofs.aircraft.instance.definition.autopilot.maxDescentrate = -6000;
-            geofs.aircraft.instance.definition.autopilot.baseClimbrate = 700;
-            geofs.aircraft.instance.definition.autopilot.baseDescentrate = -700;
-        }
-        if (geofs.autopilot) {
-            if (!geofs.autopilot.definition) geofs.autopilot.definition = {};
-            geofs.autopilot.definition.maxClimbrate = 6000;
-            geofs.autopilot.definition.maxDescentrate = -6000;
-            geofs.autopilot.definition.baseClimbrate = 700;
-            geofs.autopilot.definition.baseDescentrate = -700;
-
-            if (!geofs.autopilot.values) {
-                geofs.autopilot.values = { course: 0, altitude: 0, speed: 0, verticalSpeed: 0 };
-            } else if (typeof geofs.autopilot.values.verticalSpeed !== 'number') {
-                geofs.autopilot.values.verticalSpeed = 0;
-            }
-        }
-    }
-
     function writeUIVerticalSpeed(val) {
         val = Math.round(Number(val) || 0);
         AFCS_STATE.targetVS = val;
-        AFCS_STATE.lastUIVS = val;
 
         if (typeof geofs !== 'undefined' && geofs.autopilot) {
             if (!geofs.autopilot.values) geofs.autopilot.values = {};
@@ -289,13 +423,10 @@
             if (geofs.autopilot.UI) {
                 if (!geofs.autopilot.UI.values) geofs.autopilot.UI.values = {};
                 geofs.autopilot.UI.values.verticalSpeed = val;
-                if (typeof geofs.autopilot.UI.update === 'function') {
-                    geofs.autopilot.UI.update();
-                }
             }
         }
         let vsInput = document.querySelector(".geofs-autopilot-verticalSpeed");
-        if (vsInput) {
+        if (vsInput && document.activeElement !== vsInput) {
             let strVal = String(val);
             if (vsInput.value !== strVal) {
                 vsInput.value = strVal;
@@ -305,7 +436,6 @@
 
     function setupAutopilotUI() {
         if (!isEC135) return;
-        ensureAutopilotDefinition();
         let bar = document.querySelector(".geofs-autopilot-bar");
         if (!bar) return;
 
@@ -475,16 +605,12 @@
         if (!vals) return;
 
         AFCS_STATE.apActive = enable;
-        if (typeof geofs !== 'undefined' && geofs.autopilot) {
-            geofs.autopilot.isActive = enable;
-        }
         updateUIButtonState(enable);
 
         if (enable) {
             // Autopilot takes highest precedence: disengage Hover if active
             if (AFCS_STATE.hoverActive) {
                 AFCS_STATE.hoverActive = false;
-                window._ec135.hoverActive = false;
                 updateHoverButtonState(false);
                 log("HOVER", "Yielded to Autopilot.");
             }
@@ -500,8 +626,10 @@
             let capturedAlt = Math.round(currentAltFeet / 100) * 100;
             let capturedHdg = Math.round(vals.heading360 || 0);
 
+            AFCS_STATE.navActive = false;
+            AFCS_STATE.lastNavWptId = null;
+            AFCS_STATE.lastNavWptAlt = null;
             AFCS_STATE.targetAltitude = capturedAlt;
-            AFCS_STATE.lastTargetAltitude = capturedAlt;
             AFCS_STATE.targetHeadingAp = capturedHdg;
             AFCS_STATE.targetVS = 0;
             writeUIVerticalSpeed(0);
@@ -523,10 +651,13 @@
             let currentPitch = vals.atilt || 0;
             AFCS_STATE.integratedPitchAp = clamp(currentPitch, AFCS_CONFIG.ap.pitchMin, AFCS_CONFIG.ap.pitchMax);
             AFCS_STATE.targetPitchAtrim = currentPitch;
-            AFCS_STATE.lastVS = vals.verticalSpeed || 0;
+            AFCS_STATE.lastVS = vals.climbrate || 0;
+            AFCS_STATE.filteredVS = vals.climbrate || 0;
+            AFCS_STATE.filteredVSDeriv = 0;
             AFCS_STATE.hdgIntegralAp = 0;
 
-            // Record baseline control positions to detect manual override (Fly-Through Disconnect)
+            // Record baseline control positions and engage timestamp to detect manual override (Fly-Through Disconnect)
+            AFCS_STATE.apEngageTime = performance.now();
             AFCS_STATE.apEngagePitch = AFCS_STATE.rawPitch || 0;
             AFCS_STATE.apEngageRoll = AFCS_STATE.rawRoll || 0;
             AFCS_STATE.apEngageYaw = AFCS_STATE.rawYaw || 0;
@@ -535,13 +666,18 @@
             notify(`EC-135 AP: ON (${AFCS_STATE.targetAltitude}ft | ${AFCS_STATE.targetHeadingAp}°)`);
             syncAPInstrumentBugs();
         } else {
+            // Disengage navigation mode if active
+            AFCS_STATE.navActive = false;
+            AFCS_STATE.lastNavWptId = null;
+            AFCS_STATE.lastNavWptAlt = null;
+            updateNavButtonUI();
+
             // Seamless AP Disengage Handover:
             // A.TRIM takes over from current pitch attitude with sanitized trim datum
             let currentPitch = vals.atilt || 0;
             AFCS_STATE.targetPitchAtrim = currentPitch;
             AFCS_STATE.wasPitchDeflected = false;
             AFCS_STATE.pitchReleaseTime = 0;
-            AFCS_STATE.wasApActive = true;
             AFCS_STATE.targetVS = 0;
             writeUIVerticalSpeed(0);
 
@@ -561,7 +697,6 @@
         if (!vals) return;
 
         AFCS_STATE.hoverActive = enable;
-        window._ec135.hoverActive = enable;
         updateHoverButtonState(enable);
 
         if (enable) {
@@ -584,7 +719,6 @@
             AFCS_STATE.lastBasePitch = 0;
             AFCS_STATE.targetPitchAtrim = currentPitch;
             AFCS_STATE.wasPitchDeflected = false;
-            AFCS_STATE.wasHoverActive = true;
             log("HOVER", "DISENGAGED - Returned to realistic flight stack.");
             notify("EC-135 Hover: OFF");
         }
@@ -798,71 +932,73 @@
         // When AP is active, it guides A.TRIM's target pitch attitude, holds wings level, and locks heading
         if (AFCS_STATE.apActive) {
             // Manual Pilot Control Override (Fly-Through Disconnect):
-            // If the pilot moves pitch, roll, or pedals deliberately beyond engagement baseline,
-            // immediately disconnect Autopilot and hand full manual control back.
-            let dPitch = Math.abs(rawPitch - AFCS_STATE.apEngagePitch);
-            let dRoll = Math.abs(rawRoll - AFCS_STATE.apEngageRoll);
-            let dYaw = Math.abs(rawYaw - AFCS_STATE.apEngageYaw);
+            // Settle grace period: during the first 500ms after engagement, allow control inputs to settle
+            let timeSinceEngage = performance.now() - AFCS_STATE.apEngageTime;
+            if (timeSinceEngage < 500) {
+                AFCS_STATE.apEngagePitch = rawPitch;
+                AFCS_STATE.apEngageRoll = rawRoll;
+                AFCS_STATE.apEngageYaw = rawYaw;
+            } else {
+                let dPitch = Math.abs(rawPitch - AFCS_STATE.apEngagePitch);
+                let dRoll = Math.abs(rawRoll - AFCS_STATE.apEngageRoll);
+                let dYaw = Math.abs(rawYaw - AFCS_STATE.apEngageYaw);
 
-            if (dPitch > 0.15 || dRoll > 0.15 || dYaw > 0.20) {
-                setAutopilot(false);
-                notify("EC-135 AP: DISENGAGED (MANUAL OVERRIDE)", 2000);
-                log("AP", "Disengaged by pilot manual control override.");
+                if (dPitch > 0.25 || dRoll > 0.25 || dYaw > 0.30) {
+                    setAutopilot(false);
+                    notify("EC-135 AP: DISENGAGED (MANUAL OVERRIDE)", 2000);
+                    log("AP", "Disengaged by pilot manual control override.");
+                }
             }
         }
 
         if (AFCS_STATE.apActive) {
             const apCfg = AFCS_CONFIG.ap;
 
-            // 1. Continuously sync target altitude and heading
-            if (typeof geofs !== 'undefined' && geofs.autopilot && geofs.autopilot.values) {
-                if (typeof geofs.autopilot.values.altitude === 'number' && !isNaN(geofs.autopilot.values.altitude)) {
-                    let apAlt = geofs.autopilot.values.altitude;
-                    if (apAlt !== AFCS_STATE.targetAltitude) {
-                        AFCS_STATE.targetAltitude = apAlt;
-                        let altDiff = apAlt - currentAltFeet;
-                        if (Math.abs(altDiff) > 100) {
-                            writeUIVerticalSpeed(altDiff > 0 ? 700 : -700);
-                        } else {
-                            writeUIVerticalSpeed(0);
+            // 1. Lateral Steering & Waypoint Altitude Tracking: NAV Mode vs HDG Mode
+            if (AFCS_STATE.navActive) {
+                let navTarget = getActiveNavTarget();
+                if (navTarget) {
+                    // When sequencing or selecting a new waypoint, reset OBS to TRK (Direct-To)
+                    if (navTarget.id !== AFCS_STATE.lastNavWptId) {
+                        if (navTarget.isGPS) {
+                            resetOBSToTrack();
+                            navTarget = getActiveNavTarget() || navTarget;
                         }
                     }
-                }
-                if (typeof geofs.autopilot.values.course === 'number' && !isNaN(geofs.autopilot.values.course)) {
-                    AFCS_STATE.targetHeadingAp = geofs.autopilot.values.course;
-                }
-            }
 
-            // 2. Read V/S from UI every frame to pull user input (prioritize DOM input element)
-            let uiVS = null;
-            let vsInput = document.querySelector(".geofs-autopilot-verticalSpeed");
-            if (vsInput) {
-                let rawVal = (vsInput.value || "").trim();
-                if (rawVal === "" || rawVal === "-----") {
-                    uiVS = 0;
-                } else if (!isNaN(Number(rawVal))) {
-                    uiVS = Number(rawVal);
+                    // Grab altitude data from waypoints when waypoint changes or altitude is updated
+                    if (navTarget.id !== AFCS_STATE.lastNavWptId || navTarget.alt !== AFCS_STATE.lastNavWptAlt) {
+                        AFCS_STATE.lastNavWptId = navTarget.id;
+                        AFCS_STATE.lastNavWptAlt = navTarget.alt;
+                        if (navTarget.alt !== null && typeof geofs !== 'undefined' && geofs.autopilot && typeof geofs.autopilot.setAltitude === 'function') {
+                            geofs.autopilot.setAltitude(navTarget.alt, true);
+                            log("NAV", `Sequenced waypoint ${navTarget.name} - Target Altitude: ${navTarget.alt} ft`);
+                            notify(`EC-135 AP: WPT ${navTarget.name} (${navTarget.alt}ft)`, 2500);
+                        }
+                    }
+
+                    AFCS_STATE.targetHeadingAp = Math.round(navTarget.bearing);
+                    if (typeof geofs !== 'undefined' && geofs.autopilot && geofs.autopilot.values) {
+                        geofs.autopilot.values.course = AFCS_STATE.targetHeadingAp;
+                    }
+                    let crsInput = document.querySelector(".geofs-autopilot-course");
+                    if (crsInput && document.activeElement !== crsInput) {
+                        let strCrs = String(AFCS_STATE.targetHeadingAp);
+                        if (crsInput.value !== strCrs) crsInput.value = strCrs;
+                    }
+                } else {
+                    setNavMode(false);
+                    notify("EC-135 AP: Route End / HDG Hold", 2500);
                 }
-            }
-            if (uiVS === null && typeof geofs !== 'undefined' && geofs.autopilot && geofs.autopilot.values) {
-                if (typeof geofs.autopilot.values.verticalSpeed === 'number' && !isNaN(geofs.autopilot.values.verticalSpeed)) {
-                    uiVS = geofs.autopilot.values.verticalSpeed;
-                } else if (geofs.autopilot.values.verticalSpeed === null) {
-                    uiVS = 0;
-                }
-            }
-            if (uiVS !== null && AFCS_STATE.lastUIVS !== null && uiVS !== AFCS_STATE.lastUIVS) {
-                // User edited V/S directly in the UI: pull into target
-                AFCS_STATE.targetVS = uiVS;
-                AFCS_STATE.lastUIVS = uiVS;
+            } else {
                 if (typeof geofs !== 'undefined' && geofs.autopilot && geofs.autopilot.values) {
-                    geofs.autopilot.values.verticalSpeed = uiVS;
-                    geofs.autopilot.targetVerticalSpeed = uiVS;
+                    if (typeof geofs.autopilot.values.course === 'number' && !isNaN(geofs.autopilot.values.course)) {
+                        AFCS_STATE.targetHeadingAp = geofs.autopilot.values.course;
+                    }
                 }
-                log("AP", `User changed target V/S to ${uiVS} fpm`);
             }
 
-            // 3. Outer Altitude & Vertical Speed Loop
+            // 2. Outer Altitude & Vertical Speed Loop
             let altError = AFCS_STATE.targetAltitude - currentAltFeet;
             let commandedVS = AFCS_STATE.targetVS || 0;
             let targetVS = 0;
@@ -887,7 +1023,10 @@
                 }
             } else {
                 // commandedVS === 0: Pure Altitude Hold
-                targetVS = clamp(altError * apCfg.alt_Kp, -apCfg.alt_vsMax, apCfg.alt_vsMax);
+                // Inside +/- 25 ft of target altitude, soften altitude gain progressively so SAS + A.TRIM
+                // absorb wind gusts without the Autopilot chasing small barometric ripples
+                let altGainScale = clamp(Math.abs(altError) / 25, 0.15, 1.0);
+                targetVS = clamp(altError * apCfg.alt_Kp * altGainScale, -apCfg.alt_vsMax, apCfg.alt_vsMax);
             }
 
             // UI level notification: once within 100 ft of target altitude, update the V/S UI to 0
@@ -899,21 +1038,35 @@
                 }
             }
 
-            // Middle V/S Loop -> Target Pitch Attitude with Integral Trim & Rate Damping
-            let vsError = targetVS - currentVS;
-            let vsDerivative = 0;
-            if (AFCS_STATE.lastVS !== null && dt > 0) {
-                vsDerivative = (currentVS - AFCS_STATE.lastVS) / dt;
-            }
+            // Middle V/S Loop -> Target Pitch Attitude with Gust Filtering & Deviation-Scaled Authority
+            // Low-pass filter vertical speed (~0.5s time constant) and vertical acceleration so short wind
+            // gusts are ignored by the Autopilot and handled naturally by SAS + A.TRIM
+            let vsAlpha = clamp(dt / (0.5 + dt), 0.01, 0.25);
+            let prevFilteredVS = (AFCS_STATE.filteredVS !== null) ? AFCS_STATE.filteredVS : currentVS;
+            AFCS_STATE.filteredVS = prevFilteredVS + vsAlpha * (currentVS - prevFilteredVS);
+
+            let rawVSDeriv = (dt > 0) ? (AFCS_STATE.filteredVS - prevFilteredVS) / dt : 0;
+            AFCS_STATE.filteredVSDeriv = (AFCS_STATE.filteredVSDeriv * 0.85) + (rawVSDeriv * 0.15);
             AFCS_STATE.lastVS = currentVS;
 
-            // Integral accumulates exact pitch attitude needed to match actual V/S target
-            AFCS_STATE.integratedPitchAp -= (vsError * apCfg.vs_Ki) * dt;
+            let vsError = targetVS - AFCS_STATE.filteredVS;
+            let absVsError = Math.abs(vsError);
+
+            // Deviation-scaled authority:
+            // - Small ripples (< 25 fpm): minimal AP movement (15%), letting SAS + A.TRIM hold steady attitude
+            // - Large deviations (> 150 fpm, e.g. rapid collective change): full AP authority + proportional boost
+            let vsAuthority = clamp((absVsError - 20) / 130, 0.15, 1.0);
+            let largeDevBoost = 1.0 + clamp((absVsError - 200) / 300, 0.0, 1.5);
+
+            // Integral accumulates steady pitch attitude needed to match sustained V/S target
+            AFCS_STATE.integratedPitchAp -= (vsError * apCfg.vs_Ki * vsAuthority) * dt;
             AFCS_STATE.integratedPitchAp = clamp(AFCS_STATE.integratedPitchAp, apCfg.pitchMin, apCfg.pitchMax);
 
-            // Target attitude = Integrated trim - P correction + D rate damping (braking to prevent bouncing)
+            // Target attitude = Integrated trim - P correction + filtered D rate damping
             let desiredPitch = clamp(
-                AFCS_STATE.integratedPitchAp - (vsError * apCfg.vs_Kp) + (vsDerivative * apCfg.vs_Kd),
+                AFCS_STATE.integratedPitchAp
+                - (vsError * apCfg.vs_Kp * vsAuthority * largeDevBoost)
+                + (AFCS_STATE.filteredVSDeriv * apCfg.vs_Kd * vsAuthority),
                 apCfg.pitchMin,
                 apCfg.pitchMax
             );
@@ -950,15 +1103,7 @@
             baseYaw = clamp(hdgOutput, -apCfg.hdg_outputMax, apCfg.hdg_outputMax);
 
             // Keep GeoFS animation values continuously synced for cockpit dials/bugs
-            if (typeof geofs !== 'undefined' && geofs.animation && geofs.animation.values) {
-                geofs.animation.values.targetHeading = AFCS_STATE.targetHeadingAp;
-                geofs.animation.values.targetCourse = AFCS_STATE.targetHeadingAp;
-                geofs.animation.values.headingBug = AFCS_STATE.targetHeadingAp;
-                geofs.animation.values.courseBug = AFCS_STATE.targetHeadingAp;
-                geofs.animation.values.course = AFCS_STATE.targetHeadingAp;
-                geofs.animation.values.targetAltitude = AFCS_STATE.targetAltitude;
-                geofs.animation.values.altitudeBug = AFCS_STATE.targetAltitude;
-            }
+            syncAPInstrumentBugs();
         }
 
         // --- 2B. A.TRIM LONGITUDINAL PITCH LOOP ---
@@ -1231,6 +1376,9 @@
                     if (typeof geofs !== 'undefined' && geofs.autopilot && typeof geofs.autopilot.setCourse === 'function') {
                         geofs.autopilot.setCourse(newHdg);
                     } else {
+                        if (AFCS_STATE.navActive) {
+                            setNavMode(false);
+                        }
                         AFCS_STATE.targetHeadingAp = newHdg;
                         syncAPInstrumentBugs();
                     }
@@ -1239,7 +1387,7 @@
             }
         }, true);
 
-        // Cockpit UI Autopilot & Hover Button Listener
+        // Cockpit UI Autopilot, Hover, and HDG/NAV Button Listeners
         document.addEventListener("click", function(event) {
             if (!isEC135) return;
             let target = event.target;
@@ -1260,12 +1408,170 @@
                 setHover(!AFCS_STATE.hoverActive);
                 return;
             }
+
+            // HDG / NAV Mode Switch Buttons
+            if (target.closest(".geofs-autopilot-NAV, [data-args='NAV']")) {
+                event.stopImmediatePropagation();
+                event.preventDefault();
+                setNavMode(true);
+                return;
+            }
+
+            if (target.closest(".geofs-autopilot-HDG, [data-args='HDG']")) {
+                event.stopImmediatePropagation();
+                event.preventDefault();
+                setNavMode(false);
+                return;
+            }
+        }, true);
+
+        // Native GeoFS binds pointerup on .switchLeft/.switchRight (HDG/NAV); intercept pointerup only on those switches
+        document.addEventListener("pointerup", function(event) {
+            if (!isEC135) return;
+            let target = event.target;
+            if (!target || !target.closest) return;
+
+            if (target.closest(".geofs-autopilot-NAV, [data-args='NAV'], .geofs-autopilot-HDG, [data-args='HDG']")) {
+                event.stopImmediatePropagation();
+                event.preventDefault();
+            }
         }, true);
     }
 
     // -------------------------------------------------------------------------
     // 8. INITIALIZATION & MONITORING
     // -------------------------------------------------------------------------
+    function hookAutopilotMethods() {
+        if (typeof geofs === 'undefined') return;
+
+        if (geofs.autopilot && !geofs.autopilot._ec135Hooked) {
+            geofs.autopilot._ec135Hooked = true;
+
+            // Intercept any native GeoFS autopilot triggers so they route cleanly to AFCS
+            let origTurnOn = geofs.autopilot.turnOn;
+            geofs.autopilot.turnOn = function() {
+                if (isEC135) {
+                    setAutopilot(true);
+                    return;
+                }
+                if (typeof origTurnOn === 'function') origTurnOn.apply(this, arguments);
+            };
+
+            let origTurnOff = geofs.autopilot.turnOff;
+            geofs.autopilot.turnOff = function() {
+                if (isEC135) {
+                    if (geofs.autopilot.on && typeof origTurnOff === 'function') {
+                        origTurnOff.apply(this, arguments);
+                    }
+                    setAutopilot(false);
+                    return;
+                }
+                if (typeof origTurnOff === 'function') origTurnOff.apply(this, arguments);
+            };
+
+            let origSetMode = geofs.autopilot.setMode;
+            geofs.autopilot.setMode = function(mode) {
+                if (isEC135) {
+                    if (mode === "NAV") {
+                        setNavMode(true);
+                    } else if (mode === "HDG") {
+                        setNavMode(false);
+                    }
+                    return;
+                }
+                if (typeof origSetMode === 'function') origSetMode.apply(this, arguments);
+            };
+
+            let origSetCourse = geofs.autopilot.setCourse;
+            geofs.autopilot.setCourse = function(course, a) {
+                let res;
+                if (typeof origSetCourse === 'function') {
+                    res = origSetCourse.apply(this, arguments);
+                }
+                if (isEC135) {
+                    if (AFCS_STATE.navActive) {
+                        AFCS_STATE.navActive = false;
+                        AFCS_STATE.lastNavWptId = null;
+                        AFCS_STATE.lastNavWptAlt = null;
+                        updateNavButtonUI();
+                        notify(`EC-135 AP: HDG Mode (${Math.round(Number(course) || 0)}°)`, 2000);
+                    }
+                    if (geofs.autopilot && geofs.autopilot.values) {
+                        if (typeof geofs.autopilot.values.course === 'number' && !isNaN(geofs.autopilot.values.course)) {
+                            AFCS_STATE.targetHeadingAp = geofs.autopilot.values.course;
+                        }
+                        syncAPInstrumentBugs();
+                    }
+                }
+                return res;
+            };
+
+            let origSetAltitude = geofs.autopilot.setAltitude;
+            geofs.autopilot.setAltitude = function(alt, a) {
+                if (isEC135 && (alt === "" || alt === "-" || isNaN(Number(alt)))) {
+                    return;
+                }
+                let res;
+                if (typeof origSetAltitude === 'function') {
+                    res = origSetAltitude.apply(this, arguments);
+                }
+                if (isEC135 && geofs.autopilot && geofs.autopilot.values) {
+                    let val = Math.round(Number(alt) || 0);
+                    geofs.autopilot.values.altitude = val;
+                    let altInput = document.querySelector(".geofs-autopilot-altitude");
+                    if (altInput && document.activeElement !== altInput) {
+                        let strAlt = String(val);
+                        if (altInput.value !== strAlt) altInput.value = strAlt;
+                    }
+                    if (AFCS_STATE.apActive && val !== AFCS_STATE.targetAltitude) {
+                        AFCS_STATE.targetAltitude = val;
+                        let currentAltFeet = getCockpitAltitudeFeet();
+                        let altDiff = val - currentAltFeet;
+                        if (Math.abs(altDiff) > 100) {
+                            writeUIVerticalSpeed(altDiff > 0 ? 700 : -700);
+                        } else {
+                            writeUIVerticalSpeed(0);
+                        }
+                    }
+                    syncAPInstrumentBugs();
+                }
+                return res;
+            };
+
+            let origSetVerticalSpeed = geofs.autopilot.setVerticalSpeed;
+            geofs.autopilot.setVerticalSpeed = function(vs, a) {
+                if (isEC135) {
+                    if (vs === "" || vs === "-" || isNaN(Number(vs))) {
+                        return;
+                    }
+                    let val = Math.round(Number(vs));
+                    writeUIVerticalSpeed(val);
+                    log("AP", `Target V/S set to ${val} fpm`);
+                    return;
+                }
+                if (typeof origSetVerticalSpeed === 'function') {
+                    return origSetVerticalSpeed.apply(this, arguments);
+                }
+            };
+        }
+
+        if (geofs.nav && typeof geofs.nav.selectNavaid === 'function' && !geofs.nav._ec135Hooked) {
+            geofs.nav._ec135Hooked = true;
+            let origSelectNavaid = geofs.nav.selectNavaid;
+            geofs.nav.selectNavaid = function(id, a) {
+                let res = origSelectNavaid.apply(this, arguments);
+                if (isEC135) {
+                    let navaid = geofs.nav.navaids ? geofs.nav.navaids[id] : null;
+                    let navaidType = (navaid && geofs.nav.types) ? geofs.nav.types[navaid.type] : null;
+                    if ((navaid && navaid.GPS) || (navaidType && navaidType.GPS)) {
+                        resetOBSToTrack();
+                    }
+                }
+                return res;
+            };
+        }
+    }
+
     console.log("EC-135 Unified AFCS Suite waiting for GeoFS...");
 
     let waitForReady = setInterval(function() {
@@ -1276,93 +1582,15 @@
             let lastAircraftId = geofs.aircraft.instance.id;
 
             hookControls();
+            hookAutopilotMethods();
             animationFrameId = requestAnimationFrame(flightLoop);
 
             if (isEC135) {
+                if (typeof geofs !== 'undefined' && geofs.autopilot && (geofs.autopilot.on || geofs.autopilot.isActive)) {
+                    geofs.autopilot.turnOff();
+                }
                 hookAFCSParts();
                 setupAutopilotUI();
-
-                if (typeof geofs !== 'undefined' && geofs.autopilot) {
-                    if (geofs.autopilot.isActive) geofs.autopilot.turnOff();
-
-                    ensureAutopilotDefinition();
-
-                    // Intercept any native GeoFS autopilot triggers so they route cleanly to AFCS
-                    let origTurnOn = geofs.autopilot.turnOn;
-                    geofs.autopilot.turnOn = function() {
-                        if (isEC135) {
-                            setAutopilot(true);
-                            return;
-                        }
-                        if (typeof origTurnOn === 'function') origTurnOn.apply(this, arguments);
-                    };
-
-                    let origTurnOff = geofs.autopilot.turnOff;
-                    geofs.autopilot.turnOff = function() {
-                        if (isEC135) {
-                            setAutopilot(false);
-                            return;
-                        }
-                        if (typeof origTurnOff === 'function') origTurnOff.apply(this, arguments);
-                    };
-
-                    let origSetCourse = geofs.autopilot.setCourse;
-                    geofs.autopilot.setCourse = function(course, a) {
-                        let res;
-                        if (typeof origSetCourse === 'function') {
-                            res = origSetCourse.apply(this, arguments);
-                        }
-                        if (isEC135 && geofs.autopilot && geofs.autopilot.values) {
-                            if (typeof geofs.autopilot.values.course === 'number' && !isNaN(geofs.autopilot.values.course)) {
-                                AFCS_STATE.targetHeadingAp = geofs.autopilot.values.course;
-                            }
-                            syncAPInstrumentBugs();
-                        }
-                        return res;
-                    };
-
-                    let origSetAltitude = geofs.autopilot.setAltitude;
-                    geofs.autopilot.setAltitude = function(alt, a) {
-                        let res;
-                        if (typeof origSetAltitude === 'function') {
-                            res = origSetAltitude.apply(this, arguments);
-                        }
-                        if (isEC135 && geofs.autopilot && geofs.autopilot.values) {
-                            let val = Math.round(Number(alt) || 0);
-                            geofs.autopilot.values.altitude = val;
-                            if (AFCS_STATE.apActive && val !== AFCS_STATE.targetAltitude) {
-                                AFCS_STATE.targetAltitude = val;
-                                let currentAltFeet = getCockpitAltitudeFeet();
-                                let altDiff = val - currentAltFeet;
-                                if (Math.abs(altDiff) > 100) {
-                                    writeUIVerticalSpeed(altDiff > 0 ? 700 : -700);
-                                } else {
-                                    writeUIVerticalSpeed(0);
-                                }
-                            }
-                            syncAPInstrumentBugs();
-                        }
-                        return res;
-                    };
-
-                    let origSetVerticalSpeed = geofs.autopilot.setVerticalSpeed;
-                    geofs.autopilot.setVerticalSpeed = function(vs, a) {
-                        if (isEC135) {
-                            let val = Math.round(Number(vs) || 0);
-                            if (geofs.autopilot.values) {
-                                geofs.autopilot.values.verticalSpeed = val;
-                            }
-                            geofs.autopilot.targetVerticalSpeed = val;
-                            AFCS_STATE.targetVS = val;
-                            AFCS_STATE.lastUIVS = val;
-                            return;
-                        }
-                        if (typeof origSetVerticalSpeed === 'function') {
-                            return origSetVerticalSpeed.apply(this, arguments);
-                        }
-                    };
-
-                }
                 console.log("%c[EC-135 AFCS Suite] Engaged & Active! Ready for flight.", "color: #00ffcc; font-weight: bold;");
                 console.log("[EC-135 AFCS] Controls: 'Z' = A.TRIM | 'CapsLock' = SAS | 'G' = Hover Assist | 'A' = Cruise Autopilot");
                 notify("EC-135 AFCS: Active (SAS + A.TRIM)", 3500);
@@ -1381,36 +1609,44 @@
                         isEC135 = checkIsEC135();
 
                         if (isEC135) {
+                            if (typeof geofs !== 'undefined' && geofs.autopilot && (geofs.autopilot.on || geofs.autopilot.isActive)) {
+                                geofs.autopilot.turnOff();
+                            }
+                            hookAutopilotMethods();
                             hookAFCSParts();
                             // Reset state for new spawn
                             AFCS_STATE.sasActive = true;
                             AFCS_STATE.atrimActive = true;
                             AFCS_STATE.hoverActive = false;
                             AFCS_STATE.apActive = false;
+                            AFCS_STATE.navActive = false;
+                            AFCS_STATE.lastNavWptId = null;
+                            AFCS_STATE.lastNavWptAlt = null;
                             AFCS_STATE.targetVS = 0;
-                            AFCS_STATE.lastUIVS = 0;
                             AFCS_STATE.trimPitch = 0;
                             AFCS_STATE.lastBasePitch = 0;
                             AFCS_STATE.targetPitchAtrim = null;
                             updateUIButtonState(false);
                             updateHoverButtonState(false);
+                            updateNavButtonUI();
                             setupAutopilotUI();
 
-                            if (typeof geofs !== 'undefined' && geofs.autopilot && geofs.autopilot.isActive) {
-                                geofs.autopilot.turnOff();
-                            }
                             console.log("%c[EC-135 AFCS] EC-135 detected. AFCS Stack armed by default.", "color: #00ffcc; font-weight: bold;");
                             notify("EC-135 AFCS: Active (SAS + A.TRIM)", 3500);
                         } else {
                             unhookAFCSParts();
                             AFCS_STATE.apActive = false;
                             AFCS_STATE.hoverActive = false;
+                            AFCS_STATE.navActive = false;
+                            AFCS_STATE.lastNavWptId = null;
+                            AFCS_STATE.lastNavWptAlt = null;
                             updateUIButtonState(false);
                             updateHoverButtonState(false);
                             teardownAutopilotUI();
                         }
                     } else if (isEC135) {
                         hookFlightAnimationValues();
+                        hookAutopilotMethods();
                         // Ensure hover button is attached if UI was recreated
                         if (!document.getElementById("ec135-hover-button")) {
                             setupAutopilotUI();
