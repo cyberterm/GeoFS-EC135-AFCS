@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         GeoFS Eurocopter EC-135 AFCS Suite
 // @namespace    https://github.com/cyberterm/GeoFS-EC135-AFCS
-// @version      1.2.0
+// @version      1.2.1
 // @description  Complete Automatic Flight Control System (AFCS) for the GeoFS Eurocopter EC-135. Features Stability Augmentation (SAS), Pitch Auto-Trim (A.TRIM), Auto-Hover, and Cruise Autopilot in a single unified, frame-rate independent flight loop with bumpless state transitions.
 // @author       cyberterm
 // @match        *://*.geo-fs.com/*
@@ -358,6 +358,24 @@
         } catch (e) {
             return false;
         }
+    }
+
+    function isGamePaused() {
+        try {
+            if (typeof geofs === 'undefined') return false;
+            if (typeof geofs.isPaused === 'function') {
+                return Boolean(geofs.isPaused());
+            }
+            if (typeof geofs.pause !== 'undefined' && geofs.pause !== null) {
+                return Boolean(geofs.pause);
+            }
+            if (geofs.animation && (geofs.animation.paused || (geofs.animation.values && geofs.animation.values.paused))) {
+                return true;
+            }
+        } catch (e) {
+            // Silently ignore
+        }
+        return false;
     }
 
     function updateUIButtonState(active) {
@@ -769,14 +787,18 @@
     function updateAFCS() {
         if (!isEC135 || !geofs.animation || !geofs.animation.values) return;
 
-        const vals = geofs.animation.values;
         let now = performance.now();
+        if (isGamePaused()) {
+            AFCS_STATE.lastTime = now;
+            return;
+        }
+
+        const vals = geofs.animation.values;
         let dt = (now - AFCS_STATE.lastTime) / 1000;
         AFCS_STATE.lastTime = now;
 
         // Fetch current states
         let currentAltFeet = getCockpitAltitudeFeet(vals);
-        syncCockpitAltimeterDrums(vals);
         let currentHeading = vals.heading360 || 0;
         let currentPitch = vals.atilt || 0;      // Positive = nose down, negative = nose up
         let currentRoll = vals.aroll || 0;        // Positive = right bank, negative = left bank
@@ -1227,37 +1249,9 @@
     }
 
     // -------------------------------------------------------------------------
-    // 6. AIRCRAFT 3D PART HOOKING & ANIMATION INTERCEPTION
+    // 6. AIRCRAFT 3D PART HOOKING
     // -------------------------------------------------------------------------
-    function syncCockpitAltimeterDrums(r) {
-        if (!r) return;
-        let alt = r.altitude;
-        if (typeof alt === 'number' && !isNaN(alt)) {
-            r.altTenThousands = alt % 1e5;
-            r.altThousands = alt % 1e4;
-            r.altHundreds = alt % 1e3;
-            r.altTens = alt % 100;
-            r.altTensShift = Math.floor(alt % 1e5 / 1e4);
-            r.altUnits = alt % 10;
-        }
-    }
-
-    function hookFlightAnimationValues() {
-        if (typeof flight !== 'undefined' && typeof flight.setAnimationValues === 'function') {
-            if (flight._origSetAnimationValues) return;
-            flight._origSetAnimationValues = flight.setAnimationValues;
-            flight.setAnimationValues = function(t, a) {
-                flight._origSetAnimationValues.apply(this, arguments);
-                if (isEC135 && geofs.animation && geofs.animation.values) {
-                    syncCockpitAltimeterDrums(geofs.animation.values);
-                }
-            };
-            log("AFCS", "Intercepted flight.setAnimationValues to drive cockpit altimeter drums with barometric altitude.");
-        }
-    }
-
     function hookAFCSParts() {
-        hookFlightAnimationValues();
         if (!geofs.aircraft || !geofs.aircraft.instance || !geofs.aircraft.instance.parts) return;
         const parts = geofs.aircraft.instance.parts;
 
@@ -1645,7 +1639,6 @@
                             teardownAutopilotUI();
                         }
                     } else if (isEC135) {
-                        hookFlightAnimationValues();
                         hookAutopilotMethods();
                         // Ensure hover button is attached if UI was recreated
                         if (!document.getElementById("ec135-hover-button")) {

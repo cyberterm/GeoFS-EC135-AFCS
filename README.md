@@ -111,7 +111,6 @@ A standalone, cascaded 3-loop helicopter flight director that completely bypasse
 * **Slew-Rate Limiter:** Limits flight director pitch commands to $3.5^\circ/\text{sec}$, simulating real electric trim jacks and eliminating sudden cyclic jerks.
 * **Lateral `HDG` & `NAV` Director:** Computes great-circle bearings (`TRK`) or `OBS` radial intercept headings ($\text{OBS} + \text{clamp}(10 \times \Delta\text{course}, -45^\circ, +45^\circ)$) across Flight Plan waypoints and tuned radio navaids.
 * **Speed-Scheduled Coordinated Turning:** Airspeed-scheduled turn director that rolls up to $20^\circ$ of bank with cyclic roll above $60\text{ kts}$ while fading pedal yaw to pure turn coordination.
-* **Barometric Cockpit Altimeter Fix:** Intercepts `flight.setAnimationValues` to drive the 3D cockpit altimeter drums with true barometric altitude instead of radar altitude (`altitudeAboveGround`).
 * **Ground Decoupling & Fly-Through Disconnect:** Auto-disengages on touchdown or manual control deflection and flushes all integrators to prevent ground resonance or post-touchdown ballooning.
 
 ---
@@ -136,7 +135,7 @@ A standalone, cascaded 3-loop helicopter flight director that completely bypasse
 ### v1.2
 - [x] **NAV Mode:** Flight plan (`FPL`) and radio navaid (`VOR`/`ILS`/GPS) route tracking with automatic waypoint altitude capture, `TRK` Direct-To mode (with automatic `OBS` reset on waypoint changes), and manual `OBS` radial intercept support for crosswind drift correction.
 - [x] **Vertical Speed Selection (V.VEL):** Full two-way `VERT SPEED` integration in the autopilot bar with automatic $\pm 700\text{ fpm}$ climb/descent scheduling on altitude changes and smooth flare-to-capture.
-- [x] **GeoFS AP Panel Integration:** Complete standalone integration with the native GeoFS autopilot bar (`AUTOPILOT`, custom `HOVER` pad, `HDG`/`NAV`, `ALT`, `VERT SPEED`), fly-through manual override disconnect, and 3D cockpit barometric altimeter drum synchronization.
+- [x] **GeoFS AP Panel Integration:** Complete standalone integration with the native GeoFS autopilot bar (`AUTOPILOT`, custom `HOVER` pad, `HDG`/`NAV`, `ALT`, `VERT SPEED`), and fly-through manual override disconnect.
 
 ### v2.0
 - [ ] **4-Axis Autopilot Integration:** Full 4th-axis collective actuator automation with altitude hover and airspeed selection loop.
